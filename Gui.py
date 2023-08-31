@@ -17,10 +17,10 @@ class VideoEditorApp:
         root.geometry('500x550')
 
         self.max_words_label = tk.Label(root, text="Max words", font=("Helvetica", 13))
-        self.max_words_label.place(x=20, y=10)
+        self.max_words_label.place(x=50, y=10)
 
         self.max_words_label2 = tk.Label(root, text="Max words line", font=("Helvetica", 13))
-        self.max_words_label2.place(x=250, y=10)
+        self.max_words_label2.place(x=300, y=10)
 
         #max_words
         self.max_words = tk.Spinbox(root, from_=1, to=100, value=3)
@@ -44,7 +44,7 @@ class VideoEditorApp:
         file_path = filedialog.askopenfilename(filetypes=[("video", "*.mp4 *.avi *.mkv *webm" )])
         if file_path:
             self.label.config(text=f'{file_path}')
-            self.label.pack(pady=40)
+            self.label.pack(pady=60)
         else:
             self.label.config(text='')
 
