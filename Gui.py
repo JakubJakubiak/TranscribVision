@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import threading
 import tkinter as tk
+from tkinter import colorchooser
 
 
 class VideoEditorApp:
@@ -30,14 +31,28 @@ class VideoEditorApp:
         self.max_chars_leght = tk.Spinbox(root, from_=1, to=100, value=18)
         self.max_chars_leght.place(x=300, y=40)
 
-        self.load_button = Button(root, text="Wczytaj wideo", command=self.load_video)
+        self.load_button = Button(root, text="Upload video", command=self.load_video)
         self.load_button.place(x=50, y=90)
 
-        self.activate_button = Button(root, text="Aktywuj skrypt", command=self.activate_script)
+        self.activate_button = Button(root, text="Activate script", command=self.activate_script)
         self.activate_button.place(x=50, y=150)
 
-        self.label = Label(root, text='')
+        self.color_display = tk.Label(root, width=10, height=1, bg="white")
+        self.color_display.place(x=180, y=120)
 
+        self.color_button = tk.Button(root, text="Choose Color", command=self.choose_color)
+        self.color_button.place(x=180, y=90)
+
+
+        self.label = Label(root, text='')
+        self.selected_color = "white"
+
+    def choose_color(self):
+        color = colorchooser.askcolor(title="Choose a color")
+        if color[1]:  
+            self.selected_color = color[1]
+            print("Selected color:", color[1])
+            self.color_display.config(bg=self.selected_color)
 
     def load_video(self):
         global file_path
@@ -54,6 +69,7 @@ class VideoEditorApp:
         print(f'{file_path} --> Loding...')
         value_word = int(self.max_words.get())
         value_leght = int(self.max_chars_leght.get())
+        color_word = self.selected_color
         
         result = model.transcribe(file_path, fp16=False, regroup=True, verbose=True)  
         (
@@ -65,8 +81,9 @@ class VideoEditorApp:
             
         )
 
-        result.to_srt_vtt(f'{file_path}.srt',word_level=True, tag=('<font color="#7519BA">', '</font>'))
+        result.to_srt_vtt(f'{file_path}.srt',word_level=True, tag=('<font color="{}">'.format(color_word), '</font>'))
         result.to_ass(f'{file_path}.ass', word_level=True, tag=('{\\1c&2986cc&}', '{\\r}'))
+        result.to_ass(f'{file_path}_normal.ass', word_level=False)
 
 
 
