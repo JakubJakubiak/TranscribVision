@@ -5,6 +5,7 @@ from tkinter import *
 from tkinter import (filedialog, messagebox, colorchooser)
 import threading
 import tkinter as tk
+from tkinter import ttk
 # from tkinter import colorchooser
 
 
@@ -45,6 +46,11 @@ class VideoEditorApp:
         self.label = Label(root, text='')
         self.selected_color = "white"
 
+        options_models  = ["base", "small", "medium", "large"]
+        self.models  = ttk.Combobox(root, values=options_models)
+        self.models.set("medium")
+        self.models.place(x=300, y=90)
+
     def choose_color(self):
         color = colorchooser.askcolor(title="Choose a color")
         if color[1]:  
@@ -53,21 +59,30 @@ class VideoEditorApp:
             self.color_display.config(bg=self.selected_color)
 
     def load_video(self):
-        global file_path
         file_path = filedialog.askopenfilename(filetypes=[("video", "*.mp4 *.avi *.mkv *webm" )])
         if file_path:
             self.label.config(text=f'{file_path}')
             self.label.pack(pady=60)
         else:
-            self.label.config(text='')
+            self.label.config(text='')   
+        print(f'Selected: {file_path}')
 
 
     def activate_script(self):
-        model = stable_whisper.load_model('medium')
-        print(f'{file_path} --> Loding...')
+        selected_model_name = self.models.get() 
+        print("selected model name:", selected_model_name)
+        model = stable_whisper.load_model(selected_model_name)
+        file_path = self.label.cget("text") 
+        if file_path:
+            print("File path:", file_path)
+        else:
+            print("File path is empty.")
+
         value_word = int(self.max_words.get())
         value_leght = int(self.max_chars_leght.get())
         color_word = self.selected_color
+        print(f'{file_path} --> Loding...')
+       
         
         result = model.transcribe(file_path, fp16=False, regroup=True, verbose=True)  
         (
@@ -89,7 +104,6 @@ class VideoEditorApp:
         result.to_ass(f'{file_without_extension}_normal.ass', word_level=False)
         result.to_srt_vtt('audio.vtt',word_level=False)
 
-  
 
 if __name__ == "__main__":
     root = Tk()
