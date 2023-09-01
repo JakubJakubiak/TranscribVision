@@ -1,20 +1,18 @@
 import stable_whisper
 import re
 import os
-import pygame
 from tkinter import *
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
+from tkinter import (filedialog, messagebox, colorchooser)
 import threading
 import tkinter as tk
-from tkinter import colorchooser
+# from tkinter import colorchooser
 
 
 class VideoEditorApp:
     def __init__(self, root):
 
         self.root = root
-        self.root.title("Monotonic Video Editor")
+        self.root.title("TranscribVision Alfa 1.0")
         root.geometry('500x550')
 
         self.max_words_label = tk.Label(root, text="Max words", font=("Helvetica", 13))
@@ -80,12 +78,18 @@ class VideoEditorApp:
             .split_by_length(max_words=value_word, max_chars=value_leght)
             
         )
+        file_without_extension = file_path.rsplit('.', 1)[0]
 
-        result.to_srt_vtt(f'{file_path}.srt',word_level=True, tag=('<font color="{}">'.format(color_word), '</font>'))
-        result.to_ass(f'{file_path}.ass', word_level=True, tag=('{\\1c&2986cc&}', '{\\r}'))
-        result.to_ass(f'{file_path}_normal.ass', word_level=False)
+        # result.to_srt_vtt(f'{file_without_extension}.srt',word_level=True, tag=('<font color="{}">'.format(color_word), '</font>'))
+        result.to_srt_vtt(f'{file_without_extension}.srt', word_level=True, tag=('<font color="{}"><b>'.format(color_word), '</b></font>'))
+        result.to_ass(f'{file_without_extension}.ass', word_level=True, tag=('{\\1c&2986cc&}', '{\\r}'))
+        result.to_srt_vtt('audio.vtt',word_level=True)
 
+        result.to_ass(f'{file_without_extension}_normal.srt', word_level=False)
+        result.to_ass(f'{file_without_extension}_normal.ass', word_level=False)
+        result.to_srt_vtt('audio.vtt',word_level=False)
 
+  
 
 if __name__ == "__main__":
     root = Tk()
