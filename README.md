@@ -2,7 +2,7 @@
 
 
 
-[load_model()]([https://github.com/jianfch/stable-ts/blob/main/stable_whisper/whisper_word_level.py#L651-L676](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG56UASA3LDQMSURM77MZHSDYOA), 
+![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG56UASA3LDQMSURM77MZHSDYOA)
 
 This script modifies [OpenAI's Whisper](https://github.com/openai/whisper) to produce more reliable timestamps.
 
