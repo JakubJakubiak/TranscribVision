@@ -1,5 +1,9 @@
 # Stabilizing Timestamps for Whisper
 
+
+
+[load_model()]([https://github.com/jianfch/stable-ts/blob/main/stable_whisper/whisper_word_level.py#L651-L676](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG56UASA3LDQMSURM77MZHSDYOA)), 
+
 This script modifies [OpenAI's Whisper](https://github.com/openai/whisper) to produce more reliable timestamps.
 
 https://user-images.githubusercontent.com/28970749/225826345-ef7115db-51e4-4b23-aedd-069389b8ae43.mp4
