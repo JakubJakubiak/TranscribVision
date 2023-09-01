@@ -101,7 +101,7 @@ class VideoEditorApp:
         result.to_ass(f'{file_without_extension}.ass', word_level=True, tag=('{\\1c&2986cc&}', '{\\r}'))
         # result.to_srt_vtt(f'{file_without_extension}.VTT', word_level=True, tag=('<font color="{}">'.format(color_word),'</font>'))
 
-        result.to_ass(f'{file_without_extension}_normal.srt', word_level=False)
+        result.to_srt_vtt(f'{file_without_extension}_normal.srt', word_level=False)
         result.to_ass(f'{file_without_extension}_normal.ass', word_level=False)
         result.to_srt_vtt(f'{file_without_extension}_normal.VTT', word_level=False)
 
