@@ -95,14 +95,15 @@ class VideoEditorApp:
         )
         file_without_extension = file_path.rsplit('.', 1)[0]
 
-        # result.to_srt_vtt(f'{file_without_extension}.srt',word_level=True, tag=('<font color="{}">'.format(color_word), '</font>'))
+        #    "VTT Default: '<u>', '</u>'"
+
         result.to_srt_vtt(f'{file_without_extension}.srt', word_level=True, tag=('<font color="{}"><b>'.format(color_word), '</b></font>'))
         result.to_ass(f'{file_without_extension}.ass', word_level=True, tag=('{\\1c&2986cc&}', '{\\r}'))
-        result.to_srt_vtt('audio.vtt',word_level=True)
+        # result.to_srt_vtt(f'{file_without_extension}.VTT', word_level=True, tag=('<font color="{}">'.format(color_word),'</font>'))
 
         result.to_ass(f'{file_without_extension}_normal.srt', word_level=False)
         result.to_ass(f'{file_without_extension}_normal.ass', word_level=False)
-        result.to_srt_vtt('audio.vtt',word_level=False)
+        result.to_srt_vtt(f'{file_without_extension}_normal.VTT', word_level=False)
 
 
 if __name__ == "__main__":
