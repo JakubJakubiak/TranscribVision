@@ -1,8 +1,10 @@
+# TranscribVision
+
+
+![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG57O54RX6OJLZUJPQOYZHTGKPQ)
+
+
 # Stabilizing Timestamps for Whisper
-
-
-
-![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG56UASA3LDQMSURM77MZHSDYOA)
 
 This script modifies [OpenAI's Whisper](https://github.com/openai/whisper) to produce more reliable timestamps.
 
