@@ -1,11 +1,18 @@
 # TranscribVision
 
+- Uses [`OpenAI Whisper`](https://openai.com/research/whisper) and [`Stable-TS`](https://github.com/jianfch/stable-ts) for **extremely accurate transcription**.
+
+
 
 ![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG57O54RX6OJLZUJPQOYZHTGKPQ)
 
 
+```
+//- **Video Tutorial:** https://youtu.be/
+//- **Contact me here:** https://discord.gg/
 
-* [Quick 1.X → 2.X Guide](#quick-1x--2x-guide)
+```
+
 
 ## Setup
 ```
