@@ -7,12 +7,6 @@
 ![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG57O54RX6OJLZUJPQOYZHTGKPQ)
 
 
-```
-//- **Video Tutorial:** https://youtu.be/
-//- **Contact me here:** https://discord.gg/
-
-```
-
 
 ## Setup
 ```
