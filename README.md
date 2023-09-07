@@ -3,7 +3,6 @@
 - Uses [`OpenAI Whisper`](https://openai.com/research/whisper) and [`Stable-TS`](https://github.com/jianfch/stable-ts) for **extremely accurate transcription**.
 
 
-
 ![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG57O54RX6OJLZUJPQOYZHTGKPQ)
 
 
@@ -18,6 +17,3 @@ To install the latest commit:
 pip install -U git+https://github.com/jianfch/stable-ts.git
 ```
 
-
-## Acknowledgments
-Includes slight modification of the original work: [Whisper](https://github.com/openai/whisper)
