@@ -5,6 +5,8 @@
 
 ![photo](https://raw.githubusercontent.com/JakubJakubiak/TranscribVision/main/images/Screen.png?token=GHSAT0AAAAAACE7LG57O54RX6OJLZUJPQOYZHTGKPQ)
 
+https://github.com/JakubJakubiak/TranscribVision/assets/34916730/53e48963-db7d-4471-a9be-f955f41d3e1e
+
 
 
 ## Setup
