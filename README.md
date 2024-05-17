@@ -7,8 +7,8 @@
 
 https://github.com/JakubJakubiak/TranscribVision/assets/34916730/53e48963-db7d-4471-a9be-f955f41d3e1e
 
-[Link Text](www.youtube.com/watch?v=FE5Ffmmqznc)
 
+# YT Version Link
 www.youtube.com/watch?v=FE5Ffmmqznc
 ## Setup
 ```
