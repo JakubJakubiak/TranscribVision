@@ -1,0 +1,5 @@
+# Statystyka języków na GitHubie (Linguist)
+docs/** linguist-documentation
+packaging/*.py linguist-vendored
+*.wgsl linguist-language=WGSL
+Cargo.lock linguist-generated
