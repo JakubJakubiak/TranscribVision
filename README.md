@@ -8,7 +8,7 @@ Napisy do wideo, od zera w Rust. Wczytujesz film, wybierasz język (albo tłumac
 - **Animowane napisy**: Pop, Karaoke, Ramka pod słowem, Słowo po słowie, Tylko kolor. Aktywne słowo jest podświetlane kolorem mówcy, a mówców wykrywa się automatycznie (MFCC + k-średnich). Mówcę można też zmienić ręcznie.
 - **Eksport**: MP4 (H.264 + AAC) z wypalonymi napisami i wyciętymi pauzami, do tego SRT zwykły i SRT z kolorowym słowem.
 
-> Poprzednia wersja w Pythonie (stable-ts + moviepy + tkinter) jest nadal w [`Gui.py`](Gui.py), a nagranie z jej działania w [`demo/`](demo).
+> Poprzednia wersja w Pythonie (stable-ts + moviepy + tkinter) jest na gałęzi [`old-version`](https://github.com/JakubJakubiak/TranscribVision/tree/old-version).
 
 Cały tor mediów jest w czystym Rust, bez ffmpeg: dekodery H.264/HEVC, enkoder H.264, AAC i MP4 pochodzą z [craft-libs](https://github.com/storytold/craft-libs) (twórcy FilmCraft, MIT/Apache-2.0).
 
