@@ -9,6 +9,17 @@ use anyhow::{Result, anyhow};
 
 use crate::project::{Anim, Page, Project};
 
+#[cfg(windows)]
+pub const SYSTEM_FONTS: &[(&str, &str)] = &[
+    ("Arial Black", "C:\\Windows\\Fonts\\ariblk.ttf"),
+    ("Arial Bold", "C:\\Windows\\Fonts\\arialbd.ttf"),
+    ("Impact", "C:\\Windows\\Fonts\\impact.ttf"),
+    ("Segoe UI Black", "C:\\Windows\\Fonts\\seguibl.ttf"),
+    ("Verdana Bold", "C:\\Windows\\Fonts\\verdanab.ttf"),
+    ("Trebuchet Bold", "C:\\Windows\\Fonts\\trebucbd.ttf"),
+];
+
+#[cfg(not(windows))]
 pub const SYSTEM_FONTS: &[(&str, &str)] = &[
     ("Arial Black", "/System/Library/Fonts/Supplemental/Arial Black.ttf"),
     ("Arial Bold", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),

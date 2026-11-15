@@ -30,7 +30,10 @@ Cały tor mediów jest w czystym Rust, bez ffmpeg: dekodery H.264/HEVC, enkoder 
 
 ## Pobranie
 
-Gotowa aplikacja na macOS (Apple Silicon) jest w [Releases](https://github.com/JakubJakubiak/TranscribVision/releases). Aplikacja nie jest podpisana, więc przy pierwszym uruchomieniu kliknij ją prawym przyciskiem → **Otwórz**.
+Gotowe wersje są w [Releases](https://github.com/JakubJakubiak/TranscribVision/releases):
+
+- **macOS (Apple Silicon):** `TranscribVision-…-macos-arm64.zip`. Transkrypcja idzie na GPU (Metal). Aplikacja nie jest podpisana, więc przy pierwszym uruchomieniu kliknij ją prawym przyciskiem → **Otwórz**.
+- **Windows (x64):** `TranscribVision-…-windows-x64.zip`, rozpakuj i uruchom `TranscribVision.exe`. Transkrypcja idzie na CPU. Program nie jest podpisany, więc SmartScreen może pokazać ostrzeżenie: **Więcej informacji → Uruchom mimo to**.
 
 ## Uruchomienie ze źródeł
 

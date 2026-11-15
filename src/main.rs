@@ -1,3 +1,6 @@
+// Na Windows bez okna konsoli przy starcie aplikacji (tryb `cli` podpina się do konsoli rodzica).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
 mod export;
 mod media;
@@ -20,6 +23,8 @@ use anyhow::{Context, Result, bail};
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("cli") {
+        #[cfg(windows)]
+        attach_console();
         return cli(&args[1..]);
     }
     app::run(args.first().map(PathBuf::from))
@@ -102,4 +107,16 @@ fn cli(args: &[String]) -> Result<()> {
     }
     proj.save()?;
     Ok(())
+}
+
+/// Windows: podłącz wyjście do konsoli, z której uruchomiono program (dla trybu `cli`).
+#[cfg(windows)]
+fn attach_console() {
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // SAFETY: wywołanie WinAPI bez wskaźników; ATTACH_PARENT_PROCESS = u32::MAX.
+    unsafe {
+        AttachConsole(u32::MAX);
+    }
 }

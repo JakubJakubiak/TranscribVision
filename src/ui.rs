@@ -40,10 +40,23 @@ pub fn install(ctx: &egui::Context) -> TextureHandle {
             }
         }
     };
-    add("sf", "/System/Library/Fonts/SFNS.ttf", egui::FontFamily::Proportional, true);
-    add("sfmono", "/System/Library/Fonts/SFNSMono.ttf", egui::FontFamily::Monospace, true);
-    add("unicode", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", egui::FontFamily::Proportional, false);
-    add("unicode_m", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", egui::FontFamily::Monospace, false);
+    #[cfg(target_os = "macos")]
+    {
+        add("sf", "/System/Library/Fonts/SFNS.ttf", egui::FontFamily::Proportional, true);
+        add("sfmono", "/System/Library/Fonts/SFNSMono.ttf", egui::FontFamily::Monospace, true);
+        add("unicode", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", egui::FontFamily::Proportional, false);
+        add("unicode_m", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", egui::FontFamily::Monospace, false);
+    }
+    #[cfg(windows)]
+    {
+        let dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        let f = |n: &str| format!("{dir}\\Fonts\\{n}");
+        add("segoe", &f("segoeui.ttf"), egui::FontFamily::Proportional, true);
+        add("consolas", &f("consola.ttf"), egui::FontFamily::Monospace, true);
+        // Symbole (▶ ❚❚ ↶ ✂ ✔) i reszta Unicode.
+        add("symbols", &f("seguisym.ttf"), egui::FontFamily::Proportional, false);
+        add("symbols_m", &f("seguisym.ttf"), egui::FontFamily::Monospace, false);
+    }
     ctx.set_fonts(fonts);
 
     ctx.set_visuals(egui::Visuals::dark());

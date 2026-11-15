@@ -1,0 +1,60 @@
+name: Windows build
+
+# Buduje TranscribVision na Windows (x64) i dodaje zip do wydania na GitHubie.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag wydania, do którego dodać build (np. v0.3.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      # bindgen (whisper-rs-sys) potrzebuje libclang z LLVM zainstalowanego na runnerze.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Testy
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Paczka zip
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $dir = "dist/TranscribVision"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item target/release/transcribvision.exe "$dir/TranscribVision.exe"
+          Copy-Item README.md "$dir/README.md"
+          $zip = "dist/TranscribVision-$v-windows-x64.zip"
+          Compress-Archive -Path $dir -DestinationPath $zip -Force
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-Item $zip | Select-Object Name, Length
+
+      - name: Dodaj do wydania
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload $env:TAG $env:ZIP --clobber --repo ${{ github.repository }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TranscribVision-windows-x64
+          path: ${{ env.ZIP }}

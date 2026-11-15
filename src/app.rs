@@ -23,18 +23,22 @@ const VIDEO_EXT: &[&str] = &["mp4", "mov", "m4v", "m4a", "wav", "mp3"];
 pub fn run(file: Option<PathBuf>) -> Result<()> {
     let opts = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1480.0, 920.0])
-            .with_min_inner_size([1100.0, 680.0])
-            .with_title("TranscribVision")
-            // Przezroczysty pasek tytułu: treść sięga pod przyciski okna (macOS).
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false),
+        viewport: viewport(),
         ..Default::default()
     };
     eframe::run_native("TranscribVision", opts, Box::new(move |cc| Ok(Box::new(App::new(cc, file))))).map_err(|e| anyhow::anyhow!("{e}"))
 }
+
+fn viewport() -> egui::ViewportBuilder {
+    let v = egui::ViewportBuilder::default().with_inner_size([1480.0, 920.0]).with_min_inner_size([1100.0, 680.0]).with_title("TranscribVision");
+    // Przezroczysty pasek tytułu: treść sięga pod przyciski okna (tylko macOS).
+    #[cfg(target_os = "macos")]
+    let v = v.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
+    v
+}
+
+/// Miejsce na przyciski okna macOS w pasku aplikacji.
+const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 6.0 };
 
 pub(crate) enum JobMsg {
     Progress(f32, String),
@@ -379,7 +383,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
         }
         ui.horizontal_centered(|ui| {
-            ui.add_space(78.0); // miejsce na przyciski okna macOS
+            ui.add_space(TRAFFIC_LIGHTS);
             let (r, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
             ui::gradient_rect(ui, r, 7.0, &self.grad, 1.0);
             ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "T", egui::FontId::proportional(13.0), Color32::WHITE);
