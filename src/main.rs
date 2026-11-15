@@ -24,7 +24,7 @@ fn main() -> Result<()> {
 }
 
 /// Tryb bez okna:
-/// `transcribvision cli <wideo> [--model ID|ŚCIEŻKA] [--lang pl] [--translate] [--speakers N]
+/// `transcribvision cli <wideo> [--model ID|ŚCIEŻKA] [--lang pl] [--translate] [--prompt "nazwy"] [--speakers N]
 ///  [--words plik.json] [--out wynik.mp4] [--no-cut] [--anim pop|karaoke|box|bounce|color] [--frame SEK plik.ppm]`
 fn cli(args: &[String]) -> Result<()> {
     let video = PathBuf::from(args.first().context("podaj plik wideo")?);
@@ -38,6 +38,9 @@ fn cli(args: &[String]) -> Result<()> {
         proj.language = l;
     }
     proj.translate = has("--translate");
+    if let Some(p) = get("--prompt") {
+        proj.prompt = p;
+    }
     if let Some(a) = get("--anim") {
         proj.style.anim = match a.as_str() {
             "karaoke" => project::Anim::Karaoke,
@@ -57,7 +60,7 @@ fn cli(args: &[String]) -> Result<()> {
         }
         let a16 = audio.as_ref().context("brak audio")?.to_mono_16k();
         let t0 = std::time::Instant::now();
-        let opts = transcribe::Options { language: proj.language.clone(), translate: proj.translate, beam: false };
+        let opts = transcribe::Options { language: proj.language.clone(), translate: proj.translate, beam: false, prompt: proj.prompt.clone() };
         let prog: Arc<dyn Fn(f32) + Send + Sync> = Arc::new(|p| eprint!("\rTranskrypcja {:3.0}%", p * 100.0));
         proj.words = transcribe::transcribe(&a16, &path, &opts, prog, Arc::new(AtomicBool::new(false)))?;
         eprintln!("\n{} słów w {:.1} s", proj.words.len(), t0.elapsed().as_secs_f64());

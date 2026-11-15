@@ -4,15 +4,17 @@ Napisy do wideo, od zera w Rust. Wczytujesz film, wybierasz język (albo tłumac
 
 ![Okno aplikacji](docs/okno.png)
 
-- **Transkrypcja**: whisper.cpp przez `whisper-rs`, na GPU (Metal), z czasami pojedynczych słów. Modele ggml pobiera się w aplikacji (polecany `large-v3-turbo-q5_0`, 547 MB) do `~/Library/Application Support/TranscribVision/models`.
+- **Transkrypcja**: whisper.cpp przez `whisper-rs`, na GPU (Metal), z czasami pojedynczych słów. Pole **Słownik** podpowiada nazwy własne i trudne słowa. Modele ggml pobiera się w aplikacji (polecany `large-v3-turbo-q5_0`, 547 MB) do `~/Library/Application Support/TranscribVision/models`.
 - **Wycinanie pauz**: granice słów są dociągane do rzeczywistego dźwięku (energia RMS), potem cisza dłuższa niż próg jest wycinana, z zapasem po bokach. „Yyy/eee” usuwa się jednym przyciskiem, a pojedyncze słowa prawym przyciskiem.
 - **Szybki podgląd**: odtwarzanie od razu bez wyciętych fragmentów, w tempie 1× / 1,5× / 2×. Obraz składa shader WGSL (YUV→RGB i nałożenie napisów) w egui + wgpu.
-- **Animowane napisy**: Pop, Karaoke, Ramka pod słowem, Słowo po słowie, Tylko kolor. Aktywne słowo jest podświetlane kolorem mówcy, a mówców wykrywa się automatycznie (MFCC + k-średnich). Mówcę można też zmienić ręcznie.
+- **Animowane napisy**: Pop, Karaoke, Ramka pod słowem, Słowo po słowie, Tylko kolor. Aktywne słowo jest podświetlane kolorem mówcy, a mówców wykrywa się automatycznie (MFCC + k-średnich). Mówcę można też zmienić ręcznie (bardzo krótkie wtrącenia typu „Nice.” warto sprawdzić).
 - **Eksport**: MP4 (H.264 + AAC) z wypalonymi napisami i wyciętymi pauzami, do tego SRT zwykły i SRT z kolorowym słowem.
 
-Animowane napisy wypalone w wyeksportowanym filmie (aktywne słowo w kolorze mówcy):
+Demo: rozmowa dwóch osób przepuszczona przez program. Pauzy wycięte (51 s → 41 s), aktywne słowo świeci kolorem mówcy (żółty / niebieski). Pełne wideo z dźwiękiem jest w [Releases](https://github.com/JakubJakubiak/TranscribVision/releases).
 
-![Animowane napisy](docs/napisy.png)
+![Demo](docs/demo.gif)
+
+<sub>Tło: „Minecraft Parkour Gameplay No Copyright”, kanał Orbital - No Copyright Gameplay ([YouTube](https://www.youtube.com/watch?v=u7kdVe8q5zs)), licencja CC BY. Głosy w demo pochodzą z syntezy mowy macOS.</sub>
 
 > Poprzednia wersja w Pythonie (stable-ts + moviepy + tkinter) jest na gałęzi [`old-version`](https://github.com/JakubJakubiak/TranscribVision/tree/old-version).
 

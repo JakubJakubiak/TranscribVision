@@ -90,6 +90,8 @@ pub struct Options {
     pub language: String,
     pub translate: bool,
     pub beam: bool,
+    /// Podpowiedź dla Whispera: nazwy własne i trudne słowa (initial prompt).
+    pub prompt: String,
 }
 
 /// Transkrypcja mono 16 kHz na GPU; gdy Metal zawiedzie (np. przy uśpionym GPU), powtarza na CPU.
@@ -122,6 +124,9 @@ fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn 
     let lang = if opts.language == "auto" { None } else { Some(opts.language.as_str()) };
     p.set_language(lang);
     p.set_translate(opts.translate);
+    if !opts.prompt.trim().is_empty() {
+        p.set_initial_prompt(opts.prompt.trim());
+    }
     p.set_token_timestamps(true);
     p.set_split_on_word(true);
     p.set_max_len(1);

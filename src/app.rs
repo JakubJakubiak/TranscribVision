@@ -219,7 +219,7 @@ impl App {
             return;
         }
         let audio = l.audio16.clone();
-        let opts = transcribe::Options { language: l.project.language.clone(), translate: l.project.translate, beam: self.beam };
+        let opts = transcribe::Options { language: l.project.language.clone(), translate: l.project.translate, beam: self.beam, prompt: l.project.prompt.clone() };
         let n = self.num_speakers;
         let tx = self.tx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -435,6 +435,8 @@ impl App {
                     }
                 });
                 ui.add_space(2.0);
+                ui.label(RichText::new("Słownik (nazwy, trudne słowa)").color(MUTED).size(12.5));
+                ui.add(egui::TextEdit::singleline(&mut l.project.prompt).hint_text("np. TranscribVision, Kowalski, FFmpeg").desired_width(ui.available_width()).margin(egui::Margin::symmetric(8, 6)));
                 ui::toggle_row(ui, "Tłumacz na angielski", &mut l.project.translate);
                 ui::toggle_row(ui, "Dokładniej (wolniej)", &mut self.beam);
                 ui.horizontal(|ui| {

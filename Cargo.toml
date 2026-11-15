@@ -1,6 +1,6 @@
 [package]
 name = "transcribvision"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Napisy do wideo: transkrypcja whisper.cpp, wycinanie pauz, animowane napisy z podświetlaniem słów. Czysty Rust."
 

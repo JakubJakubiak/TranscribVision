@@ -103,67 +103,113 @@ pub fn diarize(words: &mut [Word], audio: &[f32], k: usize) {
     let fb = filterbank();
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(NFFT);
+    // Cechy: średnie MFCC (barwa) + log wysokości głosu (najsilniej odróżnia głosy).
     let feats: Vec<Option<Vec<f32>>> = chunks
         .iter()
-        .map(|&(a, b)| features(audio, (words[a].start * RATE as f64) as usize, (words[b - 1].end * RATE as f64) as usize, &fb, fft.as_ref()))
+        .map(|&(a, b)| {
+            let (sa, sb) = ((words[a].start * RATE as f64) as usize, (words[b - 1].end * RATE as f64) as usize);
+            let mut f = features(audio, sa, sb, &fb, fft.as_ref())?;
+            f.truncate(COEFS);
+            f.push(pitch(audio, sa, sb)?.ln());
+            Some(f)
+        })
         .collect();
+    let dur = |c: usize| words[chunks[c].1 - 1].end - words[chunks[c].0].start;
     let valid: Vec<usize> = (0..chunks.len()).filter(|&i| feats[i].is_some()).collect();
     if valid.len() < k {
         return;
     }
-    // Standaryzacja cech.
-    let dim = COEFS * 2;
-    let pts: Vec<Vec<f32>> = valid.iter().map(|&i| feats[i].clone().unwrap_or_default()).collect();
+    // Do grupowania bierz dłuższe fragmenty (krótkie „Nice!” są zbyt szumne).
+    let mut train: Vec<usize> = valid.iter().copied().filter(|&c| dur(c) >= 0.8).collect();
+    if train.len() < k * 2 {
+        train = valid.clone();
+    }
+    let dim = COEFS + 1;
+    let raw = |c: usize| feats[c].clone().unwrap_or_default();
     let mut mean = vec![0f32; dim];
     let mut sd = vec![0f32; dim];
-    for p in &pts {
+    for &c in &train {
+        let p = raw(c);
         for j in 0..dim {
-            mean[j] += p[j] / pts.len() as f32;
+            mean[j] += p[j] / train.len() as f32;
         }
     }
-    for p in &pts {
+    for &c in &train {
+        let p = raw(c);
         for j in 0..dim {
-            sd[j] += (p[j] - mean[j]).powi(2) / pts.len() as f32;
+            sd[j] += (p[j] - mean[j]).powi(2) / train.len() as f32;
         }
     }
-    let pts: Vec<Vec<f32>> = pts.iter().map(|p| (0..dim).map(|j| (p[j] - mean[j]) / sd[j].sqrt().max(1e-6)).collect()).collect();
+    let norm = |c: usize| -> Vec<f32> {
+        let p = raw(c);
+        (0..dim).map(|j| (p[j] - mean[j]) / sd[j].sqrt().max(1e-6) * if j == COEFS { 2.5 } else { 1.0 }).collect()
+    };
+    let pts: Vec<Vec<f32>> = train.iter().map(|&c| norm(c)).collect();
     let dist = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>();
 
-    // k-means++ (deterministycznie: najdalszy punkt).
-    let mut cents: Vec<Vec<f32>> = vec![pts[0].clone()];
-    while cents.len() < k {
-        let far = (0..pts.len())
-            .max_by(|&a, &b| {
-                let da = cents.iter().map(|c| dist(&pts[a], c)).fold(f32::MAX, f32::min);
-                let db = cents.iter().map(|c| dist(&pts[b], c)).fold(f32::MAX, f32::min);
-                da.total_cmp(&db)
-            })
-            .unwrap_or(0);
-        cents.push(pts[far].clone());
+    // k-means++ z wieloma startami (deterministyczny generator), wybór najmniejszej inercji.
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut best: Option<(f32, Vec<Vec<f32>>)> = None;
+    for _ in 0..30 {
+        let mut cents: Vec<Vec<f32>> = vec![pts[(rnd() * pts.len() as f64) as usize % pts.len()].clone()];
+        while cents.len() < k {
+            let d: Vec<f32> = pts.iter().map(|p| cents.iter().map(|c| dist(p, c)).fold(f32::MAX, f32::min)).collect();
+            let total: f32 = d.iter().sum();
+            let mut r = rnd() as f32 * total;
+            let mut pick = pts.len() - 1;
+            for (i, v) in d.iter().enumerate() {
+                if r <= *v {
+                    pick = i;
+                    break;
+                }
+                r -= v;
+            }
+            cents.push(pts[pick].clone());
+        }
+        let mut assign = vec![0usize; pts.len()];
+        for _ in 0..50 {
+            let mut changed = false;
+            for (i, p) in pts.iter().enumerate() {
+                let b = (0..k).min_by(|&a, &b| dist(p, &cents[a]).total_cmp(&dist(p, &cents[b]))).unwrap_or(0);
+                if b != assign[i] {
+                    assign[i] = b;
+                    changed = true;
+                }
+            }
+            for (c, cent) in cents.iter_mut().enumerate() {
+                let m: Vec<&Vec<f32>> = pts.iter().zip(&assign).filter(|(_, a)| **a == c).map(|(p, _)| p).collect();
+                if !m.is_empty() {
+                    for j in 0..dim {
+                        cent[j] = m.iter().map(|v| v[j]).sum::<f32>() / m.len() as f32;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let inertia: f32 = pts.iter().zip(&assign).map(|(p, &a)| dist(p, &cents[a])).sum();
+        if best.as_ref().is_none_or(|(b, _)| inertia < *b) {
+            best = Some((inertia, cents));
+        }
     }
-    let mut assign = vec![0usize; pts.len()];
-    for _ in 0..50 {
-        let mut changed = false;
-        for (i, p) in pts.iter().enumerate() {
-            let best = (0..k).min_by(|&a, &b| dist(p, &cents[a]).total_cmp(&dist(p, &cents[b]))).unwrap_or(0);
-            if best != assign[i] {
-                assign[i] = best;
-                changed = true;
-            }
-        }
-        for (c, cent) in cents.iter_mut().enumerate() {
-            let members: Vec<&Vec<f32>> = pts.iter().zip(&assign).filter(|(_, a)| **a == c).map(|(p, _)| p).collect();
-            if members.is_empty() {
-                continue;
-            }
-            for j in 0..dim {
-                cent[j] = members.iter().map(|m| m[j]).sum::<f32>() / members.len() as f32;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let Some((_, cents)) = best else { return };
+    // Przypisz wszystkie fragmenty (także krótkie) do najbliższego środka.
+    // Krótkie fragmenty: barwa jest zbyt szumna, więc decyduje sama wysokość głosu.
+    let assign: Vec<usize> = valid
+        .iter()
+        .map(|&c| {
+            let p = norm(c);
+            let d = |cent: &[f32]| if dur(c) < 0.8 { (p[COEFS] - cent[COEFS]).powi(2) } else { dist(&p, cent) };
+            (0..k).min_by(|&a, &b| d(&cents[a]).total_cmp(&d(&cents[b]))).unwrap_or(0)
+        })
+        .collect();
     // Numeruj mówców w kolejności pierwszego pojawienia się.
     let mut order: Vec<usize> = Vec::new();
     for &a in &assign {
@@ -196,4 +242,36 @@ pub fn diarize(words: &mut [Word], audio: &[f32], k: usize) {
             w.speaker = chunk_spk[ci];
         }
     }
+}
+
+/// Mediana wysokości głosu (F0, Hz) z autokorelacji ramek 40 ms; None, gdy brak dźwięcznych ramek.
+fn pitch(audio: &[f32], a: usize, b: usize) -> Option<f32> {
+    const WIN: usize = 640;
+    let (lo, hi) = ((RATE / 400.0) as usize, (RATE / 70.0) as usize);
+    let mut f0s = Vec::new();
+    let mut pos = a;
+    while pos + WIN + hi <= b.min(audio.len()) {
+        let x = &audio[pos..pos + WIN + hi];
+        let e: f32 = x[..WIN].iter().map(|v| v * v).sum();
+        pos += 320;
+        if e < 1e-3 {
+            continue;
+        }
+        let (mut best_lag, mut best) = (0, 0.0f32);
+        for lag in lo..=hi {
+            let c: f32 = (0..WIN).map(|i| x[i] * x[i + lag]).sum();
+            if c > best {
+                best = c;
+                best_lag = lag;
+            }
+        }
+        if best_lag > 0 && best / e > 0.45 {
+            f0s.push(RATE / best_lag as f32);
+        }
+    }
+    if f0s.len() < 3 {
+        return None;
+    }
+    f0s.sort_by(f32::total_cmp);
+    Some(f0s[f0s.len() / 2])
 }

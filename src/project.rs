@@ -117,6 +117,9 @@ pub struct Project {
     pub video: PathBuf,
     pub language: String,
     pub translate: bool,
+    /// Słownik: nazwy i trudne słowa podpowiadane Whisperowi.
+    #[serde(default)]
+    pub prompt: String,
     pub words: Vec<Word>,
     pub speakers: Vec<Speaker>,
     pub style: Style,
@@ -138,7 +141,7 @@ pub fn default_speakers(n: usize) -> Vec<Speaker> {
 
 impl Project {
     pub fn new(video: PathBuf) -> Self {
-        Project { video, language: "pl".into(), translate: false, words: Vec::new(), speakers: default_speakers(1), style: Style::default(), cuts: CutSettings::default() }
+        Project { video, language: "pl".into(), translate: false, prompt: String::new(), words: Vec::new(), speakers: default_speakers(1), style: Style::default(), cuts: CutSettings::default() }
     }
 
     /// Plik projektu obok wideo: `film.mp4` → `film.napisy.json`.
