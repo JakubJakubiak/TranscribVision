@@ -1,4 +1,8 @@
-
 build/*
 dist/*
 Gui.spec
+
+# Rust
+target/
+*.napisy.json
+.DS_Store

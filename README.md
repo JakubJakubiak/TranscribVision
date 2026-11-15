@@ -1,23 +1,50 @@
-# TranscribVision
+# TranscribVision (Rust)
 
-- Uses [`OpenAI Whisper`](https://openai.com/research/whisper) and [`Stable-TS`](https://github.com/jianfch/stable-ts) for **extremely accurate transcription**.
+Napisy do wideo, od zera w Rust. Wczytujesz film, wybierasz język (albo tłumaczenie na angielski) i kolory, klikasz **Transkrybuj**:
 
-  ![image](https://github.com/user-attachments/assets/c5cb7456-3e7e-4f65-998f-e85f050e7e64)
+- **Transkrypcja**: whisper.cpp przez `whisper-rs`, na GPU (Metal), z czasami pojedynczych słów. Modele ggml pobiera się w aplikacji (polecany `large-v3-turbo-q5_0`, 547 MB) do `~/Library/Application Support/TranscribVision/models`.
+- **Wycinanie pauz**: granice słów są dociągane do rzeczywistego dźwięku (energia RMS), potem cisza dłuższa niż próg jest wycinana, z zapasem po bokach. „Yyy/eee” usuwa się jednym przyciskiem, a pojedyncze słowa prawym przyciskiem.
+- **Szybki podgląd**: odtwarzanie od razu bez wyciętych fragmentów, w tempie 1× / 1,5× / 2×. Obraz składa shader WGSL (YUV→RGB i nałożenie napisów) w egui + wgpu.
+- **Animowane napisy**: Pop, Karaoke, Ramka pod słowem, Słowo po słowie, Tylko kolor. Aktywne słowo jest podświetlane kolorem mówcy, a mówców wykrywa się automatycznie (MFCC + k-średnich). Mówcę można też zmienić ręcznie.
+- **Eksport**: MP4 (H.264 + AAC) z wypalonymi napisami i wyciętymi pauzami, do tego SRT zwykły i SRT z kolorowym słowem.
 
+> Poprzednia wersja w Pythonie (stable-ts + moviepy + tkinter) jest nadal w [`Gui.py`](Gui.py), a nagranie z jej działania w [`demo/`](demo).
 
+Cały tor mediów jest w czystym Rust, bez ffmpeg: dekodery H.264/HEVC, enkoder H.264, AAC i MP4 pochodzą z [craft-libs](https://github.com/storytold/craft-libs) (twórcy FilmCraft, MIT/Apache-2.0).
 
-https://github.com/JakubJakubiak/TranscribVision/assets/34916730/53e48963-db7d-4471-a9be-f955f41d3e1e
+## Sprawdzone (M5, model large-v3-turbo q5)
 
+- Polskie nagranie 17,7 s z dwoma głosami i wstawionymi pauzami: tekst bezbłędny, transkrypcja **~3 s na GPU**. Wycięto 3,6 s ciszy, a wynik transkrybuje się ponownie słowo w słowo, więc nic nie jest ucięte. Mówcy przypisani poprawnie.
+- Angielskie demo: 39 słów, poprawnie.
+- Czasy słów: DTW whisper.cpp (dokładne początki) i dociągnięcie do energii dźwięku (końce przed pauzą, spóźnione początki).
+- Uwaga: `set_abort_callback_safe` w whisper-rs 0.16 ma błąd (losowe „przerwij” → `GenericError(-6)` „failed to encode”), dlatego program używa własnego wywołania na `AtomicBool`. Gdy GPU zawiedzie, transkrypcja sama przechodzi na CPU.
 
-# YT Version Link
-www.youtube.com/watch?v=FE5Ffmmqznc
-## Setup
+## Uruchomienie
+
+```bash
+brew install cmake          # potrzebny do zbudowania whisper.cpp
+cargo run --release         # okno
+cargo run --release -- film.mp4
 ```
-pip install -U stable-ts
+
+Tryb bez okna (testy, skrypty):
+
+```bash
+transcribvision cli film.mp4 --model large-v3-turbo-q5_0 --lang pl --speakers 2 --anim pop --out wynik.mp4
 ```
 
-To install the latest commit:
-```
-pip install -U git+https://github.com/jianfch/stable-ts.git
-```
+Projekt (słowa, styl, cięcia) zapisuje się obok filmu jako `film.napisy.json` i wczytuje automatycznie.
 
+## Moduły
+
+| Plik | Co robi |
+|---|---|
+| `media.rs` | MP4/MOV → klatki YUV 4:2:0 (H.264, HEVC 8/10-bit, obrót), audio → f32, resampling do 16 kHz |
+| `transcribe.rs` | whisper-rs, katalog i pobieranie modeli, dopasowanie granic słów do dźwięku |
+| `speakers.rs` | rozpoznawanie mówców bez modelu |
+| `project.rs` | słowa, styl, wycinanie pauz, oś czasu źródło↔wynik, plansze napisów, SRT |
+| `render.rs` | rasteryzacja czcionki, obrys (transformata odległości), cień, animacje; nakładanie na YUV |
+| `preview.rs` + `preview.wgsl` | podgląd na GPU |
+| `player.rs` | dźwięk przez cpal (zegar), dekodowanie obrazu w wątku |
+| `export.rs` | eksport MP4 |
+| `app.rs` | interfejs egui |
