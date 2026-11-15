@@ -36,7 +36,7 @@ pub fn run(file: Option<PathBuf>) -> Result<()> {
     eframe::run_native("TranscribVision", opts, Box::new(move |cc| Ok(Box::new(App::new(cc, file))))).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-enum JobMsg {
+pub(crate) enum JobMsg {
     Progress(f32, String),
     Words(Vec<Word>, usize),
     Downloaded(String),
@@ -44,47 +44,53 @@ enum JobMsg {
     Failed(String),
 }
 
-struct Job {
+pub(crate) struct Job {
     title: String,
     progress: f32,
     stage: String,
     cancel: Arc<AtomicBool>,
 }
 
-struct Loaded {
-    info: MediaInfo,
-    audio: Option<Arc<Audio>>,
-    audio16: Arc<Vec<f32>>,
+pub(crate) struct Loaded {
+    pub(crate) info: MediaInfo,
+    pub(crate) audio: Option<Arc<Audio>>,
+    pub(crate) audio16: Arc<Vec<f32>>,
     /// Szczyt głośności w ramkach 10 ms (do rysowania fali).
-    peaks: Vec<f32>,
-    project: Project,
-    player: Player,
+    pub(crate) peaks: Vec<f32>,
+    pub(crate) project: Project,
+    pub(crate) player: Player,
+    pub(crate) thumbs: crate::thumbs::SharedThumbs,
+    pub(crate) thumbs_alive: Arc<AtomicBool>,
 }
 
 pub struct App {
-    grad: TextureHandle,
-    preview: SharedPreview,
-    loaded: Option<Loaded>,
-    renderer: Option<CaptionRenderer>,
-    renderer_font: Option<Option<PathBuf>>,
-    tl: Timeline,
-    pages: Vec<Page>,
-    dirty: bool,
-    overlay_key: Option<(usize, i64, u64)>,
-    style_ver: u64,
-    model: String,
-    num_speakers: usize,
-    beam: bool,
-    preview_cuts: bool,
-    speed: f64,
-    burn: bool,
-    job: Option<Job>,
-    tx: Sender<JobMsg>,
-    rx: Receiver<JobMsg>,
-    status: String,
-    status_error: bool,
-    editing: Option<(usize, String)>,
-    pending_open: Option<PathBuf>,
+    pub(crate) grad: TextureHandle,
+    pub(crate) preview: SharedPreview,
+    pub(crate) loaded: Option<Loaded>,
+    pub(crate) renderer: Option<CaptionRenderer>,
+    pub(crate) renderer_font: Option<Option<PathBuf>>,
+    pub(crate) tl: Timeline,
+    pub(crate) pages: Vec<Page>,
+    pub(crate) dirty: bool,
+    pub(crate) overlay_key: Option<(usize, i64, u64)>,
+    pub(crate) style_ver: u64,
+    pub(crate) model: String,
+    pub(crate) num_speakers: usize,
+    pub(crate) beam: bool,
+    pub(crate) preview_cuts: bool,
+    pub(crate) speed: f64,
+    pub(crate) burn: bool,
+    pub(crate) job: Option<Job>,
+    pub(crate) tx: Sender<JobMsg>,
+    pub(crate) rx: Receiver<JobMsg>,
+    pub(crate) status: String,
+    pub(crate) status_error: bool,
+    pub(crate) editing: Option<(usize, String)>,
+    pub(crate) pending_open: Option<PathBuf>,
+    /// Stan osi czasu (montaż).
+    pub(crate) tlv: crate::timeline::TimelineView,
+    pub(crate) undo: Vec<Project>,
+    pub(crate) redo: Vec<Project>,
 }
 
 impl App {
@@ -119,6 +125,9 @@ impl App {
             status_error: false,
             editing: None,
             pending_open: file,
+            tlv: Default::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
@@ -137,15 +146,23 @@ impl App {
                 *d = PreviewData::default();
             }
             let player = Player::new(&info, audio.clone(), self.preview.clone(), ctx.clone());
+            let thumbs_alive = Arc::new(AtomicBool::new(true));
+            let thumbs = crate::thumbs::start(&info, ctx.clone(), thumbs_alive.clone());
             let project = Project::load(path).unwrap_or_else(|| Project::new(path.into()));
-            Ok(Loaded { info, audio, audio16, peaks, project, player })
+            Ok(Loaded { info, audio, audio16, peaks, project, player, thumbs, thumbs_alive })
         })();
         match res {
             Ok(l) => {
                 self.num_speakers = l.project.speakers.len().max(1);
                 let msg = if l.project.words.is_empty() { "Wideo wczytane. Wybierz język i kliknij „Transkrybuj”.".to_string() } else { format!("Wczytano zapisany projekt: {} słów.", l.project.words.len()) };
                 self.set_status(msg, false);
+                if let Some(old) = self.loaded.take() {
+                    old.thumbs_alive.store(false, Ordering::Relaxed);
+                }
                 self.loaded = Some(l);
+                self.tlv = Default::default();
+                self.undo.clear();
+                self.redo.clear();
                 self.dirty = true;
                 self.overlay_key = None;
             }
@@ -162,8 +179,7 @@ impl App {
     fn refresh(&mut self) {
         let Some(l) = self.loaded.as_mut() else { return };
         if self.dirty {
-            let full = l.project.timeline(l.info.duration);
-            let tl = if self.preview_cuts { full } else { Timeline::identity(l.info.duration) };
+            let tl = l.project.timeline_with(l.info.duration, self.preview_cuts);
             self.pages = l.project.pages(&tl);
             l.player.set_timeline(tl.clone());
             self.tl = tl;
@@ -475,6 +491,7 @@ impl App {
             // ── 2. Pauzy
             ui::card(ui, |ui| {
                 ui::card_header(ui, &self.grad, "2", "Pauzy", "Wycinanie ciszy i wtrąceń");
+                let before = l.project.clone();
                 let mut ch = ui::toggle_row(ui, "Wycinaj pauzy", &mut l.project.cuts.enabled);
                 ch |= ui::slider_row(ui, "Dłuższe niż", &mut l.project.cuts.min_pause, 0.15..=2.0, |v| format!("{v:.2} s"));
                 ch |= ui::slider_row(ui, "Zostaw ciszy", &mut l.project.cuts.padding, 0.0..=0.5, |v| format!("{v:.2} s"));
@@ -493,6 +510,7 @@ impl App {
                 }
                 if ch {
                     self.dirty = true;
+                    push_undo(&mut self.undo, &mut self.redo, before);
                 }
                 // Statystyka: przed → po.
                 let full = l.project.timeline(l.info.duration);
@@ -718,6 +736,9 @@ impl App {
             }
         });
         if let Some((i, a)) = action {
+            if !matches!(a, WordAction::Edit) {
+                push_undo(&mut self.undo, &mut self.redo, l.project.clone());
+            }
             let words = &mut l.project.words;
             match a {
                 WordAction::ToggleCut => words[i].cut = !words[i].cut,
@@ -752,78 +773,6 @@ impl App {
         }
         if let Some(s) = seek {
             self.seek_src(s);
-        }
-    }
-
-    // ───────────── Dół: oś czasu ─────────────
-
-    fn timeline(&mut self, ui: &mut egui::Ui) {
-        let Some(l) = self.loaded.as_ref() else { return };
-        let sh = l.player.shared.clone();
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Oś czasu").strong());
-            ui.label(RichText::new("czerwone = wycięte").size(11.5).color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui::toggle(ui, &mut self.preview_cuts).changed() {
-                    self.dirty = true;
-                }
-                ui.label(RichText::new("Podgląd bez pauz").color(MUTED));
-            });
-        });
-        let dur = l.info.duration.max(0.01);
-        let avail = ui.available_size();
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail.x, avail.y.max(70.0) - 6.0), Sense::click_and_drag());
-        let p = ui.painter_at(rect);
-        p.rect_filled(rect, 12.0, CARD);
-        ui::stroke_rect(ui, rect, 12.0, Stroke::new(1.0, BORDER));
-        let inner = rect.shrink2(Vec2::new(10.0, 8.0));
-        let x_of = |t: f64| inner.left() + (t / dur) as f32 * inner.width();
-        let full = l.project.timeline(l.info.duration);
-        let kept = |t: f64| full.segs.iter().any(|s| t >= s.src0 && t < s.src1);
-        // Wycięte fragmenty.
-        let mut prev_end = 0.0;
-        for s in full.segs.iter().map(|s| (s.src0, s.src1)).chain(std::iter::once((dur, dur))) {
-            if s.0 > prev_end + 0.01 {
-                let r = Rect::from_x_y_ranges(x_of(prev_end)..=x_of(s.0), inner.y_range());
-                p.rect_filled(r, 6.0, DANGER.gamma_multiply(0.14));
-            }
-            prev_end = s.1;
-        }
-        // Fala dźwięku: słupki z gradientem.
-        let mid = inner.top() + inner.height() * 0.42;
-        let hh = inner.height() * 0.36;
-        let n = l.peaks.len().max(1);
-        let step = 3.0;
-        let cols = (inner.width() / step) as usize;
-        for c in 0..cols {
-            let a = c * n / cols.max(1);
-            let b = ((c + 1) * n / cols.max(1)).max(a + 1).min(n);
-            let pk = l.peaks[a.min(n - 1)..b].iter().fold(0f32, |m, v| m.max(*v)).min(1.0).sqrt();
-            let x = inner.left() + c as f32 * step + 1.0;
-            let t = (c as f64 / cols as f64) * dur;
-            let col = if kept(t) { ui::lerp(ACCENT, ACCENT2, c as f32 / cols as f32) } else { Color32::from_rgb(70, 60, 74) };
-            let h = (pk * hh).max(1.0);
-            p.rect_filled(Rect::from_center_size(Pos2::new(x, mid), Vec2::new(2.0, h * 2.0)), 1.0, col);
-        }
-        // Słowa jako „pigułki”.
-        let wy = inner.bottom() - 10.0;
-        for w in &l.project.words {
-            let c = l.project.speakers.get(w.speaker).map_or(ACCENT, |s| ui::rgb(s.color));
-            let col = if w.cut { DANGER } else { c };
-            let r = Rect::from_x_y_ranges(x_of(w.start)..=(x_of(w.end) - 1.0).max(x_of(w.start) + 2.0), wy..=wy + 6.0);
-            p.rect_filled(r, 3.0, col.gamma_multiply(0.9));
-        }
-        // Głowica.
-        let px = x_of(self.tl.out_to_src(sh.pos()));
-        p.line_segment([Pos2::new(px, rect.top() + 4.0), Pos2::new(px, rect.bottom() - 4.0)], Stroke::new(2.0, Color32::WHITE));
-        p.circle_filled(Pos2::new(px, rect.top() + 6.0), 5.0, Color32::WHITE);
-        if let Some(pos) = resp.interact_pointer_pos() {
-            let t = ((pos.x - inner.left()) / inner.width()).clamp(0.0, 1.0) as f64 * dur;
-            self.seek_src(t);
-        }
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
 
@@ -988,7 +937,10 @@ impl eframe::App for App {
         self.poll_jobs();
         self.refresh();
 
-        let (space, cmd_o, cmd_s) = ctx.input(|i| (i.key_pressed(egui::Key::Space), i.modifiers.command && i.key_pressed(egui::Key::O), i.modifiers.command && i.key_pressed(egui::Key::S)));
+        let (space, cmd_o, cmd_s) = ctx.input_mut(|i| (i.key_pressed(egui::Key::Space), i.consume_key(egui::Modifiers::COMMAND, egui::Key::O), i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)));
+        if !ctx.egui_wants_keyboard_input() {
+            self.timeline_keys(&ctx);
+        }
         if space && !ctx.egui_wants_keyboard_input() {
             if let Some(l) = self.loaded.as_ref() {
                 l.player.toggle();
@@ -1005,7 +957,7 @@ impl eframe::App for App {
         egui::Panel::top("top").exact_size(52.0).frame(frame(BG, egui::Margin::symmetric(8, 0))).show(ui, |ui| self.top_bar(ui, &ctx));
         egui::Panel::bottom("status").exact_size(34.0).frame(frame(BG, egui::Margin::symmetric(10, 0))).show(ui, |ui| self.status_bar(ui));
         if self.loaded.is_some() {
-            egui::Panel::bottom("timeline").resizable(true).default_size(150.0).min_size(110.0).frame(frame(BG, egui::Margin::symmetric(14, 4))).show(ui, |ui| self.timeline(ui));
+            egui::Panel::bottom("timeline").resizable(true).default_size(250.0).min_size(190.0).frame(frame(BG, egui::Margin::symmetric(14, 4))).show(ui, |ui| self.timeline_panel(ui));
         }
         egui::Panel::left("left").resizable(true).default_size(340.0).min_size(300.0).frame(frame(BG, egui::Margin { left: 14, right: 6, top: 4, bottom: 4 })).show(ui, |ui| self.left_panel(ui));
         egui::Panel::right("words").resizable(true).default_size(380.0).min_size(280.0).frame(frame(BG, egui::Margin { left: 6, right: 14, top: 4, bottom: 4 })).show(ui, |ui| self.transcript_panel(ui));
@@ -1017,4 +969,13 @@ impl eframe::App for App {
         }
         let _ = PANEL;
     }
+}
+
+/// Zapamiętaj stan przed zmianą (cofanie ⌘Z), czyści ponawianie.
+pub(crate) fn push_undo(undo: &mut Vec<Project>, redo: &mut Vec<Project>, before: Project) {
+    undo.push(before);
+    if undo.len() > 200 {
+        undo.remove(0);
+    }
+    redo.clear();
 }

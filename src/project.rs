@@ -124,6 +124,17 @@ pub struct Project {
     pub speakers: Vec<Speaker>,
     pub style: Style,
     pub cuts: CutSettings,
+    /// Montaż: fragmenty źródła w kolejności wyniku (pusto = cały film).
+    #[serde(default)]
+    pub clips: Vec<Clip>,
+}
+
+/// Klip montażu: zakres źródła. Pauzy są wycinane wewnątrz klipów.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    pub id: u64,
+    pub src0: f64,
+    pub src1: f64,
 }
 
 pub const SPEAKER_COLORS: [[u8; 4]; 6] = [
@@ -141,7 +152,7 @@ pub fn default_speakers(n: usize) -> Vec<Speaker> {
 
 impl Project {
     pub fn new(video: PathBuf) -> Self {
-        Project { video, language: "pl".into(), translate: false, prompt: String::new(), words: Vec::new(), speakers: default_speakers(1), style: Style::default(), cuts: CutSettings::default() }
+        Project { video, language: "pl".into(), translate: false, prompt: String::new(), words: Vec::new(), speakers: default_speakers(1), style: Style::default(), cuts: CutSettings::default(), clips: Vec::new() }
     }
 
     /// Plik projektu obok wideo: `film.mp4` → `film.napisy.json`.
@@ -170,8 +181,40 @@ impl Project {
         }
     }
 
-    /// Fragmenty źródła, które zostają w wyniku.
+    /// Oś wyniku: klipy w kolejności montażu, w każdym zostają fragmenty z mową.
     pub fn timeline(&self, duration: f64) -> Timeline {
+        self.timeline_with(duration, true)
+    }
+
+    /// `pauses = false`: klipy w całości (podgląd bez wycinania pauz).
+    pub fn timeline_with(&self, duration: f64, pauses: bool) -> Timeline {
+        let keep = if pauses { self.kept_regions(duration) } else { vec![(0.0, duration)] };
+        let clips = self.clips_or_full(duration);
+        let mut segs = Vec::new();
+        let mut out = 0.0;
+        for (ci, c) in clips.iter().enumerate() {
+            for &(a, b) in &keep {
+                let (s0, s1) = (a.max(c.src0), b.min(c.src1));
+                // Okruchy < 0,1 s (np. po cięciu tuż przy pauzie) dawałyby mignięcie obrazu.
+                if s1 - s0 >= 0.1 {
+                    segs.push(Seg { src0: s0, src1: s1, out0: out, clip: ci });
+                    out += s1 - s0;
+                }
+            }
+        }
+        if segs.is_empty() {
+            segs.push(Seg { src0: 0.0, src1: duration, out0: 0.0, clip: 0 });
+            out = duration;
+        }
+        Timeline { segs, total: out }
+    }
+
+    pub fn clips_or_full(&self, duration: f64) -> Vec<Clip> {
+        if self.clips.is_empty() { vec![Clip { id: 1, src0: 0.0, src1: duration }] } else { self.clips.clone() }
+    }
+
+    /// Fragmenty źródła z mową (bez pauz i wyciętych słów), posortowane.
+    fn kept_regions(&self, duration: f64) -> Vec<(f64, f64)> {
         let live: Vec<&Word> = self.words.iter().filter(|w| !w.cut).collect();
         let mut keep: Vec<(f64, f64)> = Vec::new();
         if self.cuts.enabled && !live.is_empty() {
@@ -193,12 +236,10 @@ impl Project {
             }
         } else {
             keep.push((0.0, duration));
-            // Bez wycinania pauz: usuń tylko ręcznie wycięte słowa.
             for w in self.words.iter().filter(|w| w.cut) {
                 keep = subtract(&keep, w.start, w.end);
             }
         }
-        // Scal nachodzące się i odrzuć okruchy.
         keep.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut merged: Vec<(f64, f64)> = Vec::new();
         for k in keep {
@@ -213,38 +254,113 @@ impl Project {
         if merged.is_empty() {
             merged.push((0.0, duration));
         }
-        let mut segs = Vec::new();
-        let mut out = 0.0;
-        for (a, b) in merged {
-            segs.push(Seg { src0: a, src1: b, out0: out });
-            out += b - a;
-        }
-        Timeline { segs, total: out }
+        merged
     }
 
-    /// Podział słów na plansze napisów (czasy w osi wyniku).
+    // ───── Operacje montażowe (wszystkie na liście klipów) ─────
+
+    fn ensure_clips(&mut self, duration: f64) {
+        if self.clips.is_empty() {
+            self.clips.push(Clip { id: 1, src0: 0.0, src1: duration });
+        }
+    }
+
+    fn next_id(&self) -> u64 {
+        self.clips.iter().map(|c| c.id).max().unwrap_or(0) + 1
+    }
+
+    /// Podziel klip pod czasem wyniku `t`. Zwraca indeks lewej części.
+    pub fn split_at(&mut self, duration: f64, tl: &Timeline, t: f64) -> Option<usize> {
+        let i = tl.segs.partition_point(|s| s.out0 <= t).checked_sub(1)?;
+        let seg = tl.segs.get(i)?;
+        if t >= seg.out0 + (seg.src1 - seg.src0) {
+            return None;
+        }
+        let src = seg.src0 + (t - seg.out0);
+        self.ensure_clips(duration);
+        let ci = seg.clip;
+        let c = *self.clips.get(ci)?;
+        if src - c.src0 < 0.05 || c.src1 - src < 0.05 {
+            return None;
+        }
+        let id = self.next_id();
+        self.clips[ci].src1 = src;
+        self.clips.insert(ci + 1, Clip { id, src0: src, src1: c.src1 });
+        Some(ci)
+    }
+
+    pub fn delete_clip(&mut self, duration: f64, i: usize) {
+        self.ensure_clips(duration);
+        if i < self.clips.len() && self.clips.len() > 1 {
+            self.clips.remove(i);
+        }
+    }
+
+    pub fn duplicate_clip(&mut self, duration: f64, i: usize) -> Option<usize> {
+        self.ensure_clips(duration);
+        let c = *self.clips.get(i)?;
+        let id = self.next_id();
+        self.clips.insert(i + 1, Clip { id, ..c });
+        Some(i + 1)
+    }
+
+    /// Przenieś klip `from` tak, by stał na pozycji `to` (indeks po usunięciu).
+    pub fn move_clip(&mut self, duration: f64, from: usize, to: usize) {
+        self.ensure_clips(duration);
+        if from >= self.clips.len() {
+            return;
+        }
+        let c = self.clips.remove(from);
+        let to = to.min(self.clips.len());
+        self.clips.insert(to, c);
+    }
+
+    /// Przytnij klip do zakresu źródła (min. 0,1 s).
+    pub fn trim_clip(&mut self, duration: f64, i: usize, src0: f64, src1: f64) {
+        self.ensure_clips(duration);
+        if let Some(c) = self.clips.get_mut(i) {
+            c.src0 = src0.clamp(0.0, duration - 0.1);
+            c.src1 = src1.clamp(c.src0 + 0.1, duration);
+        }
+    }
+
+    /// Podział słów na plansze napisów (czasy w osi wyniku, kolejność montażu).
     pub fn pages(&self, tl: &Timeline) -> Vec<Page> {
         let st = &self.style;
+        // Wystąpienia słów w kolejności wyniku (klip może się powtarzać).
+        let mut occ: Vec<(usize, f64, f64, usize)> = Vec::new();
+        for sg in &tl.segs {
+            let first = self.words.partition_point(|w| w.end <= sg.src0);
+            for (i, w) in self.words.iter().enumerate().skip(first) {
+                if w.start >= sg.src1 {
+                    break;
+                }
+                let mid = (w.start + w.end) / 2.0;
+                if w.cut || mid < sg.src0 || mid >= sg.src1 {
+                    continue;
+                }
+                let a = sg.out0 + (w.start.max(sg.src0) - sg.src0);
+                let b = sg.out0 + (w.end.min(sg.src1) - sg.src0);
+                occ.push((i, a, b.max(a + 0.05), sg.clip));
+            }
+        }
         let mut pages: Vec<Page> = Vec::new();
         let mut cur: Option<Page> = None;
-        let mut prev: Option<&Word> = None;
-        for (i, w) in self.words.iter().enumerate() {
-            if w.cut {
-                continue;
-            }
-            let (Some(s), Some(e)) = (tl.src_to_out(w.start + 0.001), tl.src_to_out((w.end - 0.001).max(w.start + 0.001))) else {
-                continue;
-            };
+        let mut prev: Option<(usize, f64, usize)> = None;
+        for &(i, s, e, clip) in &occ {
+            let w = &self.words[i];
             let text = if st.uppercase { w.text.to_uppercase() } else { w.text.clone() };
-            let pw = PageWord { index: i, text, start: s, end: e.max(s + 0.05), speaker: w.speaker };
+            let pw = PageWord { index: i, text, start: s, end: e, speaker: w.speaker };
             let split = match (&cur, prev) {
-                (Some(p), Some(pr)) => {
+                (Some(p), Some((pi, pend, pclip))) => {
+                    let pr = &self.words[pi];
                     let chars: usize = p.words.iter().map(|x| x.text.chars().count() + 1).sum::<usize>() + pw.text.chars().count();
                     p.words.len() >= st.max_words.max(1)
                         || chars > st.max_chars.max(4)
                         || pr.text.ends_with(['.', '?', '!', '…', ','])
-                        || w.start - pr.end > 0.6
+                        || s - pend > 0.6
                         || pr.speaker != w.speaker
+                        || pclip != clip
                 }
                 _ => true,
             };
@@ -257,7 +373,7 @@ impl Project {
             let p = cur.as_mut().expect("page");
             p.end = pw.end;
             p.words.push(pw);
-            prev = Some(w);
+            prev = Some((i, e, clip));
         }
         if let Some(p) = cur {
             pages.push(p);
@@ -298,6 +414,8 @@ pub struct Seg {
     pub src0: f64,
     pub src1: f64,
     pub out0: f64,
+    /// Indeks klipu montażu, z którego pochodzi fragment.
+    pub clip: usize,
 }
 
 /// Lista zachowanych fragmentów źródła i ich położenie w wyniku.
@@ -309,24 +427,39 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn identity(duration: f64) -> Self {
-        Timeline { segs: vec![Seg { src0: 0.0, src1: duration, out0: 0.0 }], total: duration }
+        Timeline { segs: vec![Seg { src0: 0.0, src1: duration, out0: 0.0, clip: 0 }], total: duration }
     }
 
     pub fn src_to_out(&self, t: f64) -> Option<f64> {
         self.segs.iter().find(|s| t >= s.src0 && t < s.src1).map(|s| s.out0 + (t - s.src0))
     }
 
-    /// Najbliższy czas wyniku dla dowolnego czasu źródła (wycięte → początek następnego fragmentu).
+    /// Czas wyniku dla czasu źródła: fragment, który go zawiera, a gdy wycięty — najbliższy.
     pub fn src_to_out_nearest(&self, t: f64) -> f64 {
+        if let Some(o) = self.src_to_out(t) {
+            return o;
+        }
+        let mut best = (f64::MAX, 0.0);
         for s in &self.segs {
-            if t < s.src0 {
-                return s.out0;
-            }
-            if t < s.src1 {
-                return s.out0 + (t - s.src0);
+            let (d, o) = if t < s.src0 { (s.src0 - t, s.out0) } else { (t - s.src1, s.out0 + (s.src1 - s.src0)) };
+            if d < best.0 {
+                best = (d, o);
             }
         }
-        self.total
+        best.1.min(self.total)
+    }
+
+    /// Zakres wyniku zajmowany przez klip `ci` (początek, koniec).
+    pub fn clip_range(&self, ci: usize) -> Option<(f64, f64)> {
+        let mut r: Option<(f64, f64)> = None;
+        for s in self.segs.iter().filter(|s| s.clip == ci) {
+            let e = s.out0 + (s.src1 - s.src0);
+            r = Some(match r {
+                None => (s.out0, e),
+                Some((a, b)) => (a.min(s.out0), b.max(e)),
+            });
+        }
+        r
     }
 
     pub fn out_to_src(&self, t: f64) -> f64 {
@@ -398,4 +531,78 @@ pub fn to_srt(proj: &Project, pages: &[Page], word_level: bool) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proj() -> Project {
+        let mut p = Project::new("x.mp4".into());
+        // Dwa zdania: „a b” (1–2 s) i „c d” (5–6 s), pauza 3 s pomiędzy.
+        p.words = [("A", 1.0, 1.4), ("B.", 1.5, 2.0), ("C", 5.0, 5.4), ("D.", 5.5, 6.0)]
+            .iter()
+            .map(|&(t, s, e)| Word { text: t.into(), start: s, end: e, speaker: 0, cut: false, prob: 1.0 })
+            .collect();
+        p.cuts = CutSettings { enabled: true, min_pause: 0.5, padding: 0.1 };
+        p
+    }
+
+    #[test]
+    fn pauses_are_cut_inside_clips() {
+        let p = proj();
+        let tl = p.timeline(10.0);
+        assert_eq!(tl.segs.len(), 2);
+        assert!((tl.total - 2.4).abs() < 1e-9, "{}", tl.total);
+    }
+
+    #[test]
+    fn split_move_reorders_output_and_captions() {
+        let mut p = proj();
+        let tl = p.timeline(10.0);
+        // Tnij między zdaniami (czas wyniku 1.2 = koniec pierwszego fragmentu).
+        let i = p.split_at(10.0, &tl, 1.15).expect("split");
+        assert_eq!(i, 0);
+        assert_eq!(p.clips.len(), 2);
+        p.move_clip(10.0, 1, 0);
+        let tl = p.timeline(10.0);
+        // Po zamianie najpierw „C D.”, potem „A B.”.
+        assert!(tl.segs[0].src0 > 4.0 && tl.segs[1].src0 < 2.0);
+        let pages = p.pages(&tl);
+        assert_eq!(pages[0].words[0].text, "C");
+        assert_eq!(pages.last().unwrap().words.last().unwrap().text, "B.");
+        assert!(pages.windows(2).all(|w| w[0].start <= w[1].start));
+    }
+
+    #[test]
+    fn duplicate_delete_trim() {
+        let mut p = proj();
+        p.duplicate_clip(10.0, 0);
+        assert_eq!(p.clips.len(), 2);
+        assert_ne!(p.clips[0].id, p.clips[1].id);
+        let total2 = p.timeline(10.0).total;
+        assert!((total2 - 4.8).abs() < 1e-9);
+        p.delete_clip(10.0, 1);
+        p.trim_clip(10.0, 0, 4.0, 10.0);
+        let tl = p.timeline(10.0);
+        assert_eq!(tl.segs.len(), 1);
+        assert!(tl.segs[0].src0 >= 4.0);
+        // Nie da się usunąć ostatniego klipu.
+        p.delete_clip(10.0, 0);
+        assert_eq!(p.clips.len(), 1);
+    }
+
+    #[test]
+    fn nearest_works_for_reordered_clips() {
+        let mut p = proj();
+        let tl = p.timeline(10.0);
+        p.split_at(10.0, &tl, 1.15);
+        p.move_clip(10.0, 1, 0);
+        let tl = p.timeline(10.0);
+        // Słowo „A” (1.0 s źródła) jest teraz w drugiej połowie wyniku.
+        assert!(tl.src_to_out_nearest(1.2) > 1.0);
+        // Czas w wyciętej pauzie trafia do najbliższego fragmentu.
+        let o = tl.src_to_out_nearest(3.0);
+        assert!((0.0..=tl.total).contains(&o));
+    }
 }

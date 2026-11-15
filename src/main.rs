@@ -7,6 +7,8 @@ mod project;
 mod render;
 mod speakers;
 mod transcribe;
+mod thumbs;
+mod timeline;
 mod ui;
 
 use std::path::PathBuf;

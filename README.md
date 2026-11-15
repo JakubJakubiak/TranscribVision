@@ -8,6 +8,7 @@ Napisy do wideo, od zera w Rust. Wczytujesz film, wybierasz język (albo tłumac
 - **Wycinanie pauz**: granice słów są dociągane do rzeczywistego dźwięku (energia RMS), potem cisza dłuższa niż próg jest wycinana, z zapasem po bokach. „Yyy/eee” usuwa się jednym przyciskiem, a pojedyncze słowa prawym przyciskiem.
 - **Szybki podgląd**: odtwarzanie od razu bez wyciętych fragmentów, w tempie 1× / 1,5× / 2×. Obraz składa shader WGSL (YUV→RGB i nałożenie napisów) w egui + wgpu.
 - **Animowane napisy**: Pop, Karaoke, Ramka pod słowem, Słowo po słowie, Tylko kolor. Aktywne słowo jest podświetlane kolorem mówcy, a mówców wykrywa się automatycznie (MFCC + k-średnich). Mówcę można też zmienić ręcznie (bardzo krótkie wtrącenia typu „Nice.” warto sprawdzić).
+- **Montaż jak w CapCut**: oś czasu z miniaturami klatek, falą dźwięku i ścieżką napisów. Klipy przeciąga się myszką (reszta sama się rozsuwa, bez dziur), przycina ciągnięciem krawędzi (z przyciąganiem do granic słów i głowicy), tnie klawiszem `S`, duplikuje `⌘D`, usuwa `Delete`; `⌘Z` / `⇧⌘Z` cofa i ponawia. Napisy idą za klipami, a pauzy wycinają się dalej wewnątrz klipów. Zoom: `⌘` + kółko lub gest, `⇧←/→` skok o sekundę.
 - **Eksport**: MP4 (H.264 + AAC) z wypalonymi napisami i wyciętymi pauzami, do tego SRT zwykły i SRT z kolorowym słowem.
 
 Demo: rozmowa dwóch osób przepuszczona przez program. Pauzy wycięte (51 s → 41 s), aktywne słowo świeci kolorem mówcy (żółty / niebieski). Pełne wideo z dźwiękiem jest w [Releases](https://github.com/JakubJakubiak/TranscribVision/releases).
