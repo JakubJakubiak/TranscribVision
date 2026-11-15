@@ -44,15 +44,6 @@ pub enum Anim {
 
 impl Anim {
     pub const ALL: [Anim; 5] = [Anim::Pop, Anim::Karaoke, Anim::Box, Anim::Bounce, Anim::Color];
-    pub fn label(self) -> &'static str {
-        match self {
-            Anim::Karaoke => "Karaoke (wypełnianie)",
-            Anim::Pop => "Pop (powiększenie)",
-            Anim::Box => "Ramka pod słowem",
-            Anim::Bounce => "Słowo po słowie",
-            Anim::Color => "Tylko kolor",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -350,7 +341,7 @@ impl Project {
         for &(i, s, e, clip) in &occ {
             let w = &self.words[i];
             let text = if st.uppercase { w.text.to_uppercase() } else { w.text.clone() };
-            let pw = PageWord { index: i, text, start: s, end: e, speaker: w.speaker };
+            let pw = PageWord { text, start: s, end: e, speaker: w.speaker };
             let split = match (&cur, prev) {
                 (Some(p), Some((pi, pend, pclip))) => {
                     let pr = &self.words[pi];
@@ -477,7 +468,6 @@ impl Timeline {
 
 #[derive(Clone, Debug)]
 pub struct PageWord {
-    pub index: usize,
     pub text: String,
     pub start: f64,
     pub end: f64,

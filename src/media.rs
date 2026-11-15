@@ -80,7 +80,6 @@ pub struct MediaInfo {
     pub height: usize,
     pub fps: f64,
     pub duration: f64,
-    pub rotation: u8,
     pub has_video: bool,
 }
 
@@ -173,13 +172,13 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if matches!(ext.as_str(), "wav" | "mp3" | "flac" | "aiff" | "aif") {
         let a = load_audio(path)?;
-        return Ok(MediaInfo { path: path.into(), width: 0, height: 0, fps: 30.0, duration: a.duration(), rotation: 0, has_video: false });
+        return Ok(MediaInfo { path: path.into(), width: 0, height: 0, fps: 30.0, duration: a.duration(), has_video: false });
     }
     let file = File::open(path)?;
     let mp4 = isobmff::open(file).map_err(|e| anyhow!("MP4: {e}"))?;
     let Some(ti) = mp4.track_of_kind(TrackKind::Video) else {
         let a = load_audio(path)?;
-        return Ok(MediaInfo { path: path.into(), width: 0, height: 0, fps: 30.0, duration: a.duration(), rotation: 0, has_video: false });
+        return Ok(MediaInfo { path: path.into(), width: 0, height: 0, fps: 30.0, duration: a.duration(), has_video: false });
     };
     let t = &mp4.tracks[ti];
     let vp = t.video().ok_or_else(|| anyhow!("brak parametrów wideo"))?;
@@ -192,7 +191,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
     let fps = if duration > 0.0 { t.samples.len() as f64 / duration } else { 30.0 };
     // Zaokrąglij do typowych wartości (29.97, 30, 25, 60…).
     let fps = [23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0].into_iter().find(|c| (c - fps).abs() < 0.6).unwrap_or(fps);
-    Ok(MediaInfo { path: path.into(), width: w, height: h, fps, duration, rotation, has_video: true })
+    Ok(MediaInfo { path: path.into(), width: w, height: h, fps, duration, has_video: true })
 }
 
 impl VideoReader {

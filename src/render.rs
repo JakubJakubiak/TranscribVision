@@ -29,7 +29,6 @@ pub struct Overlay {
 
 pub struct CaptionRenderer {
     font: FontArc,
-    pub path: PathBuf,
 }
 
 fn default_font_path() -> PathBuf {
@@ -41,7 +40,7 @@ impl CaptionRenderer {
         let path = font.map(PathBuf::from).unwrap_or_else(default_font_path);
         let bytes = std::fs::read(&path).map_err(|e| anyhow!("czcionka {}: {e}", path.display()))?;
         let font = FontArc::try_from_vec(bytes).map_err(|e| anyhow!("czcionka {}: {e}", path.display()))?;
-        Ok(CaptionRenderer { font, path })
+        Ok(CaptionRenderer { font })
     }
 
     fn text_width(&self, text: &str, px: f32) -> f32 {
