@@ -2,3 +2,4 @@
 target/
 *.napisy.json
 .DS_Store
+dist/
