@@ -27,6 +27,9 @@ jobs:
       # bindgen (whisper-rs-sys) potrzebuje libclang z LLVM zainstalowanego na runnerze.
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       FEATURES: ${{ matrix.variant == 'gpu' && '--features vulkan' || '' }}
+      # Krótki katalog buildu: shadery Vulkana w whisper.cpp tworzą tak głębokie ścieżki,
+      # że spod D:\a\TranscribVision\TranscribVision\target MSBuild przekracza limit 260 znaków.
+      CARGO_TARGET_DIR: C:\t
     steps:
       - uses: actions/checkout@v5
         with:
@@ -37,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.variant }}
+          workspaces: ". -> C:\\t"
 
       # Vulkan SDK (nagłówki, vulkan-1.lib i kompilator shaderów glslc) potrzebny tylko do budowania;
       # w czasie działania program używa vulkan-1.dll ze sterownika karty graficznej.
@@ -61,7 +65,7 @@ jobs:
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
           $dir = "dist/TranscribVision"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item target/release/transcribvision.exe "$dir/TranscribVision.exe"
+          Copy-Item C:/t/release/transcribvision.exe "$dir/TranscribVision.exe"
           Copy-Item README.md "$dir/README.md"
           $zip = "dist/TranscribVision-$v-windows-x64-${{ matrix.variant }}.zip"
           Compress-Archive -Path $dir -DestinationPath $zip -Force
