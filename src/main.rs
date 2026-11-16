@@ -27,12 +27,23 @@ fn main() -> Result<()> {
         attach_console();
         return cli(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("gpus") {
+        #[cfg(windows)]
+        attach_console();
+        let g = transcribe::gpus();
+        println!("Obsługa GPU: {}", if transcribe::GPU_BACKEND.is_empty() { "brak (wersja CPU)" } else { transcribe::GPU_BACKEND });
+        for (i, n) in g.iter().enumerate() {
+            println!("  {i}: {n}");
+        }
+        return Ok(());
+    }
     app::run(args.first().map(PathBuf::from))
 }
 
 /// Tryb bez okna:
 /// `transcribvision cli <wideo> [--model ID|ŚCIEŻKA] [--lang pl] [--translate] [--prompt "nazwy"] [--speakers N]
-///  [--words plik.json] [--out wynik.mp4] [--no-cut] [--anim pop|karaoke|box|bounce|color] [--frame SEK plik.ppm]`
+///  [--words plik.json] [--out wynik.mp4] [--no-cut] [--anim pop|karaoke|box|bounce|color] [--frame SEK plik.ppm]
+///  [--cpu | --gpu NR]`
 fn cli(args: &[String]) -> Result<()> {
     let video = PathBuf::from(args.first().context("podaj plik wideo")?);
     let get = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
@@ -67,10 +78,13 @@ fn cli(args: &[String]) -> Result<()> {
         }
         let a16 = audio.as_ref().context("brak audio")?.to_mono_16k();
         let t0 = std::time::Instant::now();
-        let opts = transcribe::Options { language: proj.language.clone(), translate: proj.translate, beam: false, prompt: proj.prompt.clone() };
-        let prog: Arc<dyn Fn(f32) + Send + Sync> = Arc::new(|p| eprint!("\rTranskrypcja {:3.0}%", p * 100.0));
-        proj.words = transcribe::transcribe(&a16, &path, &opts, prog, Arc::new(AtomicBool::new(false)))?;
-        eprintln!("\n{} słów w {:.1} s", proj.words.len(), t0.elapsed().as_secs_f64());
+        let device = if has("--cpu") { transcribe::Device::Cpu } else { get("--gpu").and_then(|g| g.parse().ok()).map_or(transcribe::Device::Auto, transcribe::Device::Gpu) };
+        let opts = transcribe::Options { language: proj.language.clone(), translate: proj.translate, beam: false, prompt: proj.prompt.clone(), device };
+        let prog: transcribe::Report = Arc::new(|p, stage, detail| eprint!("\r\x1b[2K{:3.0}%  {stage}  {detail}", p * 100.0));
+        let t = transcribe::transcribe(&a16, &path, &opts, prog, Arc::new(AtomicBool::new(false)))?;
+        proj.words = t.words;
+        let dur = a16.len() as f64 / 16_000.0;
+        eprintln!("\n{} słów w {:.1} s ({:.1}× szybciej niż nagranie) · {}", proj.words.len(), t0.elapsed().as_secs_f64(), dur / t.seconds.max(0.01), t.device);
         let n: usize = get("--speakers").and_then(|s| s.parse().ok()).unwrap_or(1);
         speakers::diarize(&mut proj.words, &a16, n);
         proj.speakers = project::default_speakers(n);

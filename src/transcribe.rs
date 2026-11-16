@@ -1,12 +1,14 @@
-//! Rozpoznawanie mowy: whisper.cpp przez whisper-rs (GPU Metal na Macu),
+//! Rozpoznawanie mowy: whisper.cpp przez whisper-rs (GPU: Metal na Macu, Vulkan/CUDA na Windows),
 //! słowa z czasami, potem dociągnięcie granic słów do rzeczywistego dźwięku.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+use whisper_rs_sys as sys;
 
 use crate::project::Word;
 
@@ -92,32 +94,123 @@ pub struct Options {
     pub beam: bool,
     /// Podpowiedź dla Whispera: nazwy własne i trudne słowa (initial prompt).
     pub prompt: String,
+    /// Na czym liczyć.
+    pub device: Device,
 }
 
-/// Transkrypcja mono 16 kHz na GPU; gdy Metal zawiedzie (np. przy uśpionym GPU), powtarza na CPU.
-pub fn transcribe(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn Fn(f32) + Send + Sync>, cancel: Arc<AtomicBool>) -> Result<Vec<Word>> {
-    let gpu = std::env::var_os("TV_CPU").is_none();
-    match transcribe_on(audio, model, opts, progress.clone(), cancel.clone(), gpu) {
-        Err(e) if gpu && !cancel.load(Ordering::Relaxed) => {
-            eprintln!("GPU zawiodło ({e}), ponawiam na CPU");
-            transcribe_on(audio, model, opts, progress, cancel, false)
-        }
-        r => r,
+/// Urządzenie dla whisper.cpp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Device {
+    /// Pierwsza karta graficzna, a gdy jej brak lub zawiedzie — procesor.
+    #[default]
+    Auto,
+    /// Karta graficzna o tym numerze (kolejność jak w [`gpus`]).
+    Gpu(usize),
+    Cpu,
+}
+
+/// Z jaką obsługą GPU zbudowano program.
+pub const GPU_BACKEND: &str = if cfg!(target_os = "macos") {
+    "Metal"
+} else if cfg!(feature = "cuda") {
+    "CUDA"
+} else if cfg!(feature = "vulkan") {
+    "Vulkan"
+} else {
+    ""
+};
+
+/// Karty graficzne widoczne dla whisper.cpp (nazwy w kolejności numerów `gpu_device`).
+pub fn gpus() -> Vec<String> {
+    if std::env::var_os("TV_DEBUG").is_none() {
+        whisper_rs::install_logging_hooks();
     }
+    let mut out = Vec::new();
+    // SAFETY: rejestr ggml jest statyczny; zwracane napisy żyją do końca programu.
+    unsafe {
+        for i in 0..sys::ggml_backend_dev_count() {
+            let dev = sys::ggml_backend_dev_get(i);
+            let t = sys::ggml_backend_dev_type(dev);
+            if t != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU && t != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU {
+                continue;
+            }
+            let txt = |p: *const std::os::raw::c_char| if p.is_null() { String::new() } else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
+            let desc = txt(sys::ggml_backend_dev_description(dev));
+            out.push(if desc.is_empty() { txt(sys::ggml_backend_dev_name(dev)) } else { desc });
+        }
+    }
+    out
 }
 
-fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn Fn(f32) + Send + Sync>, cancel: Arc<AtomicBool>, gpu: bool) -> Result<Vec<Word>> {
+/// Ile wątków procesora dać whisper.cpp: wszystkie rdzenie na CPU, kilka przy GPU
+/// (wtedy procesor tylko podaje dane, a za dużo wątków przeszkadza).
+pub fn threads(gpu: bool) -> i32 {
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (if gpu { n.min(4) } else { n.min(16) }) as i32
+}
+
+/// Postęp: (ułamek 0..1 całej transkrypcji, etap, szczegół). Pusty szczegół = bez zmiany.
+pub type Report = Arc<dyn Fn(f32, &str, &str) + Send + Sync>;
+
+pub const STAGE_MODEL: &str = "Wczytywanie modelu";
+pub const STAGE_SPEECH: &str = "Rozpoznawanie mowy";
+pub const STAGE_ALIGN: &str = "Dopasowanie słów";
+
+/// Wynik transkrypcji z informacją, na czym liczono.
+pub struct Transcript {
+    pub words: Vec<Word>,
+    /// Np. „GPU: NVIDIA GeForce RTX 3060 (Vulkan)” albo „CPU, 12 wątków”.
+    pub device: String,
+    pub seconds: f64,
+}
+
+/// Transkrypcja mono 16 kHz na wybranym urządzeniu; gdy GPU zawiedzie (np. brak sterownika
+/// albo pamięci), w trybie Auto powtarza na CPU.
+pub fn transcribe(audio: &[f32], model: &Path, opts: &Options, progress: Report, cancel: Arc<AtomicBool>) -> Result<Transcript> {
+    let t0 = std::time::Instant::now();
+    let gpus = if GPU_BACKEND.is_empty() || std::env::var_os("TV_CPU").is_some() { Vec::new() } else { gpus() };
+    let gpu = match opts.device {
+        Device::Cpu => None,
+        Device::Auto => (!gpus.is_empty()).then_some(0),
+        Device::Gpu(i) => Some(i.min(gpus.len().saturating_sub(1))).filter(|_| !gpus.is_empty()),
+    };
+    let cpu_name = || format!("CPU, {} wątków", threads(false));
+    let (words, device) = match gpu {
+        Some(i) => {
+            let name = format!("GPU: {} ({GPU_BACKEND})", gpus[i]);
+            progress(0.0, STAGE_MODEL, &name);
+            match transcribe_on(audio, model, opts, progress.clone(), cancel.clone(), Some(i)) {
+                Ok(w) => (w, name),
+                Err(e) if opts.device == Device::Auto && !cancel.load(Ordering::Relaxed) => {
+                    eprintln!("GPU zawiodło ({e}), ponawiam na CPU");
+                    progress(0.0, STAGE_MODEL, &format!("GPU zawiodło, liczę na procesorze ({})", cpu_name()));
+                    (transcribe_on(audio, model, opts, progress, cancel, None)?, cpu_name())
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        None => {
+            progress(0.0, STAGE_MODEL, &cpu_name());
+            (transcribe_on(audio, model, opts, progress, cancel, None)?, cpu_name())
+        }
+    };
+    Ok(Transcript { words, device, seconds: t0.elapsed().as_secs_f64() })
+}
+
+fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Report, cancel: Arc<AtomicBool>, gpu: Option<usize>) -> Result<Vec<Word>> {
     if std::env::var_os("TV_DEBUG").is_none() {
         whisper_rs::install_logging_hooks();
     }
     let mut cp = WhisperContextParameters::default();
-    cp.use_gpu(gpu);
+    cp.use_gpu(gpu.is_some());
+    cp.gpu_device(gpu.unwrap_or(0) as i32);
     // DTW: dokładne czasy słów z wyrównania uwagi (dobrane do modelu po nazwie pliku).
     if let Some(preset) = dtw_preset(model) {
         cp.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset }, ..Default::default() });
     }
     let ctx = WhisperContext::new_with_params(model.to_str().context("ścieżka modelu")?, cp).map_err(|e| anyhow!("wczytanie modelu: {e:?}"))?;
     let mut state = ctx.create_state().map_err(|e| anyhow!("{e:?}"))?;
+    progress(0.03, STAGE_SPEECH, "pierwszy fragment (do 30 s)…");
 
     let strategy = if opts.beam { SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 } } else { SamplingStrategy::Greedy { best_of: 1 } };
     let mut p = FullParams::new(strategy);
@@ -135,9 +228,26 @@ fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn 
     p.set_print_special(false);
     p.set_print_timestamps(false);
     p.set_suppress_blank(true);
-    p.set_n_threads(std::thread::available_parallelism().map(|n| n.get() as i32).unwrap_or(4).min(8));
-    let pr = progress.clone();
-    p.set_progress_callback_safe(move |pct: i32| pr(pct as f32 / 100.0));
+    p.set_n_threads(threads(gpu.is_some()));
+    // Postęp na żywo: koniec ostatniego rozpoznanego fragmentu względem długości nagrania
+    // i kilka ostatnich słów. Własne callbacki C (bez przecieków `*_safe` z whisper-rs).
+    let live = Live { report: progress.clone(), total: audio.len() as f64 / 16_000.0, recent: Mutex::new(String::new()), next: std::sync::atomic::AtomicI32::new(0), best: std::sync::atomic::AtomicU32::new(0) };
+    unsafe extern "C" fn on_segment(_: *mut sys::whisper_context, st: *mut sys::whisper_state, _n_new: i32, ud: *mut std::ffi::c_void) {
+        // SAFETY: `ud` wskazuje na `live`, który żyje do końca `state.full`; `st` jest ważny w callbacku.
+        unsafe { pump(&*(ud as *const Live), st, None) }
+    }
+    unsafe extern "C" fn on_progress(_: *mut sys::whisper_context, st: *mut sys::whisper_state, pct: i32, ud: *mut std::ffi::c_void) {
+        // SAFETY: jak wyżej.
+        unsafe { pump(&*(ud as *const Live), st, Some(pct as f32 / 100.0)) }
+    }
+    let ud = &live as *const Live as *mut std::ffi::c_void;
+    // SAFETY: `live` żyje dłużej niż `state.full`, callbacki tylko czytają (tekst pod Mutexem).
+    unsafe {
+        p.set_new_segment_callback(Some(on_segment));
+        p.set_new_segment_callback_user_data(ud);
+        p.set_progress_callback(Some(on_progress));
+        p.set_progress_callback_user_data(ud);
+    }
     // Własne przerywanie: `set_abort_callback_safe` z whisper-rs 0.16 ma błąd (trampolina czyta
     // `Box<Box<dyn FnMut>>` jako `F` i zwraca losową wartość, przez co koder „przerywa się” sam).
     unsafe extern "C" fn abort_cb(user_data: *mut std::ffi::c_void) -> bool {
@@ -152,6 +262,7 @@ fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn 
 
     state.full(p, audio).map_err(|e| if cancel.load(Ordering::Relaxed) { anyhow!("przerwano") } else { anyhow!("whisper: {e:?}") })?;
 
+    progress(0.92, STAGE_ALIGN, "czasy słów z DTW i głośności");
     let eot = ctx.token_eot();
     let mut words: Vec<Word> = Vec::new();
     for seg in state.as_iter() {
@@ -189,7 +300,7 @@ fn transcribe_on(audio: &[f32], model: &Path, opts: &Options, progress: Arc<dyn 
         }
     }
     refine_bounds(&mut words, audio, 16_000);
-    progress(1.0);
+    progress(1.0, STAGE_ALIGN, "");
     Ok(words)
 }
 
@@ -291,4 +402,59 @@ fn dtw_preset(model: &Path) -> Option<DtwModelPreset> {
         _ if base.first() == Some(&"tiny") => if name.contains(".en") { DtwModelPreset::TinyEn } else { DtwModelPreset::Tiny },
         _ => return None,
     })
+}
+
+struct Live {
+    report: Report,
+    total: f64,
+    recent: Mutex<String>,
+    /// Ile fragmentów już pokazano.
+    next: std::sync::atomic::AtomicI32,
+    /// Największy dotąd postęp (bity f32; dodatnie f32 porównują się jak u32).
+    best: std::sync::atomic::AtomicU32,
+}
+
+fn clock(t: f64) -> String {
+    let t = t.max(0.0) as u64;
+    format!("{}:{:02}", t / 60, t % 60)
+}
+
+/// Pokaż nowe fragmenty (czas i ostatnie słowa) i postęp, który nigdy się nie cofa.
+///
+/// # Safety
+/// `st` musi być ważnym stanem whisper.cpp w trakcie `whisper_full`.
+unsafe fn pump(live: &Live, st: *mut sys::whisper_state, pct: Option<f32>) {
+    // `n_new` przy podziale na słowa bywa niespójne — liczymy przetworzone fragmenty sami.
+    let n = unsafe { sys::whisper_full_n_segments_from_state(st) };
+    let from = live.next.swap(n, Ordering::Relaxed).min(n);
+    let mut recent = live.recent.lock().unwrap_or_else(|e| e.into_inner());
+    let mut t1 = None;
+    for i in from..n {
+        // SAFETY: indeks w zakresie 0..n segmentów stanu.
+        unsafe {
+            t1 = Some(sys::whisper_full_get_segment_t1_from_state(st, i) as f64 / 100.0);
+            let p = sys::whisper_full_get_segment_text_from_state(st, i);
+            if !p.is_null() {
+                let t = std::ffi::CStr::from_ptr(p).to_string_lossy();
+                if !t.contains("[_") {
+                    recent.push_str(&t);
+                }
+            }
+        }
+    }
+    // Zostaw końcówkę (~48 znaków) do podglądu.
+    let cs: Vec<char> = recent.chars().collect();
+    if cs.len() > 48 {
+        *recent = cs[cs.len() - 48..].iter().collect();
+    }
+    let mut frac = pct.unwrap_or(0.0);
+    if let Some(t) = t1 {
+        frac = frac.max((t / live.total.max(0.01)).clamp(0.0, 1.0) as f32);
+    }
+    let frac = f32::from_bits(live.best.fetch_max(frac.to_bits(), Ordering::Relaxed)).max(frac);
+    let detail = match t1 {
+        Some(t) => format!("{} / {}  ·  „…{}”", clock(t.min(live.total)), clock(live.total), recent.trim()),
+        None => String::new(),
+    };
+    (live.report)(0.03 + 0.87 * frac, STAGE_SPEECH, &detail);
 }

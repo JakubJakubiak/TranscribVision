@@ -41,8 +41,10 @@ fn viewport() -> egui::ViewportBuilder {
 const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 6.0 };
 
 pub(crate) enum JobMsg {
-    Progress(f32, String),
-    Words(Vec<Word>, usize),
+    /// (postęp 0..1, etap, szczegół — pusty = bez zmiany)
+    Progress(f32, String, String),
+    /// (słowa, liczba mówców, opis: urządzenie i czas)
+    Words(Vec<Word>, usize, String),
     Downloaded(String),
     Exported(PathBuf),
     Failed(String),
@@ -52,7 +54,76 @@ pub(crate) struct Job {
     title: String,
     progress: f32,
     stage: String,
+    /// Szczegół bieżącego etapu (np. urządzenie, ostatnie rozpoznane słowa).
+    detail: String,
     cancel: Arc<AtomicBool>,
+    started: std::time::Instant,
+    stage_started: std::time::Instant,
+    /// Zaplanowane etapy (lista „krok po kroku”); puste dla zadań jednoetapowych.
+    steps: Vec<&'static str>,
+    /// Ukończone etapy z czasem trwania (s).
+    done: Vec<(String, f64)>,
+    /// Do płynnego paska: kiedy przyszedł ostatni wzrost, tempo i największy skok w etapie.
+    last_rise: std::time::Instant,
+    stage_p0: f32,
+    rate: f32,
+    max_jump: f32,
+}
+
+impl Job {
+    fn new(title: impl Into<String>, stage: impl Into<String>, steps: Vec<&'static str>, cancel: Arc<AtomicBool>) -> Self {
+        let now = std::time::Instant::now();
+        Job { title: title.into(), progress: 0.0, stage: stage.into(), detail: String::new(), cancel, started: now, stage_started: now, steps, done: Vec::new(), last_rise: now, stage_p0: 0.0, rate: 0.0, max_jump: 0.0 }
+    }
+
+    fn update(&mut self, p: f32, stage: String, detail: String) {
+        if stage != self.stage {
+            if !self.stage.is_empty() && !self.done.iter().any(|(s, _)| *s == self.stage) {
+                self.done.push((std::mem::take(&mut self.stage), self.stage_started.elapsed().as_secs_f64()));
+            }
+            self.stage = stage;
+            self.stage_started = std::time::Instant::now();
+            self.detail.clear();
+            self.stage_p0 = p;
+            self.rate = 0.0;
+            self.max_jump = 0.0;
+        }
+        if !detail.is_empty() {
+            self.detail = detail;
+        }
+        let now = std::time::Instant::now();
+        if p > self.progress + 1e-4 {
+            self.max_jump = self.max_jump.max(p - self.progress);
+            let dt = now.duration_since(self.stage_started).as_secs_f32();
+            if dt > 0.2 {
+                self.rate = (p - self.stage_p0) / dt;
+            }
+            self.last_rise = now;
+        }
+        self.progress = p;
+    }
+
+    /// Postęp do narysowania: między rzadkimi skokami whispera (co 30 s nagrania)
+    /// przesuwa się dalej w zmierzonym tempie, ale nie dalej niż o jeden typowy skok.
+    fn shown(&self) -> f32 {
+        let dt = self.last_rise.elapsed().as_secs_f32();
+        let creep = (self.rate * dt).min(self.max_jump * 0.9);
+        (self.progress + creep.max(0.0)).min(0.999)
+    }
+
+    /// Szacowany pozostały czas (s), gdy postęp jest już miarodajny.
+    fn eta(&self) -> Option<f64> {
+        let el = self.started.elapsed().as_secs_f64();
+        let p = self.shown() as f64;
+        (p > 0.06 && el > 2.0).then(|| el * (1.0 - p) / p)
+    }
+}
+
+pub(crate) const STAGE_SPEAKERS: &str = "Rozpoznawanie mówców";
+
+pub(crate) fn clock(t: f64) -> String {
+    let t = t.max(0.0).round() as u64;
+    format!("{}:{:02}", t / 60, t % 60)
 }
 
 pub(crate) struct Loaded {
@@ -80,6 +151,9 @@ pub struct App {
     pub(crate) style_ver: u64,
     pub(crate) model: String,
     pub(crate) num_speakers: usize,
+    pub(crate) device: transcribe::Device,
+    /// Karty graficzne widoczne dla whisper.cpp (liczone raz przy starcie).
+    pub(crate) gpus: Vec<String>,
     pub(crate) beam: bool,
     pub(crate) preview_cuts: bool,
     pub(crate) speed: f64,
@@ -118,6 +192,8 @@ impl App {
             style_ver: 0,
             model,
             num_speakers: 1,
+            device: transcribe::Device::Auto,
+            gpus: if transcribe::GPU_BACKEND.is_empty() { Vec::new() } else { transcribe::gpus() },
             beam: false,
             preview_cuts: true,
             speed: 1.0,
@@ -239,21 +315,24 @@ impl App {
             return;
         }
         let audio = l.audio16.clone();
-        let opts = transcribe::Options { language: l.project.language.clone(), translate: l.project.translate, beam: self.beam, prompt: l.project.prompt.clone() };
+        let opts = transcribe::Options { language: l.project.language.clone(), translate: l.project.translate, beam: self.beam, prompt: l.project.prompt.clone(), device: self.device };
         let n = self.num_speakers;
         let tx = self.tx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.job = Some(Job { title: "Transkrypcja".into(), progress: 0.0, stage: "Wczytywanie modelu".into(), cancel: cancel.clone() });
+        self.job = Some(Job::new("Transkrypcja", transcribe::STAGE_MODEL, vec![transcribe::STAGE_MODEL, transcribe::STAGE_SPEECH, transcribe::STAGE_ALIGN, STAGE_SPEAKERS], cancel.clone()));
         std::thread::spawn(move || {
             let ptx = tx.clone();
-            let prog: Arc<dyn Fn(f32) + Send + Sync> = Arc::new(move |p| {
-                let _ = ptx.send(JobMsg::Progress(p * 0.95, "Rozpoznawanie mowy".into()));
+            let prog: transcribe::Report = Arc::new(move |p, stage, detail| {
+                let _ = ptx.send(JobMsg::Progress(p * 0.96, stage.into(), detail.into()));
             });
+            let audio_len = audio.len() as f64 / 16_000.0;
             match transcribe::transcribe(&audio, &path, &opts, prog, cancel) {
-                Ok(mut words) => {
-                    let _ = tx.send(JobMsg::Progress(0.97, "Rozpoznawanie mówców".into()));
-                    speakers::diarize(&mut words, &audio, n);
-                    let _ = tx.send(JobMsg::Words(words, n));
+                Ok(mut t) => {
+                    let _ = tx.send(JobMsg::Progress(0.97, STAGE_SPEAKERS.into(), if n > 1 { format!("{n} mówców, barwa i wysokość głosu") } else { "jeden mówca".into() }));
+                    speakers::diarize(&mut t.words, &audio, n);
+                    let speed = audio_len / t.seconds.max(0.01);
+                    let info = format!("w {} ({speed:.1}× szybciej niż nagranie) · {}", clock(t.seconds), t.device);
+                    let _ = tx.send(JobMsg::Words(t.words, n, info));
                 }
                 Err(e) => {
                     let _ = tx.send(JobMsg::Failed(format!("{e:#}")));
@@ -266,11 +345,11 @@ impl App {
         let id = self.model.clone();
         let tx = self.tx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.job = Some(Job { title: format!("Pobieranie {id}"), progress: 0.0, stage: "huggingface.co".into(), cancel: cancel.clone() });
+        self.job = Some(Job::new(format!("Pobieranie {id}"), "huggingface.co", Vec::new(), cancel.clone()));
         std::thread::spawn(move || {
             let ptx = tx.clone();
             let r = transcribe::download_model(&id, &move |p| {
-                let _ = ptx.send(JobMsg::Progress(p, "Pobieranie".into()));
+                let _ = ptx.send(JobMsg::Progress(p, "Pobieranie".into(), String::new()));
             }, &cancel);
             let _ = tx.send(match r {
                 Ok(_) => JobMsg::Downloaded(id),
@@ -287,11 +366,11 @@ impl App {
         let opts = ExportOptions { burn_captions: self.burn, cut_pauses: true, crf: 20.0 };
         let tx = self.tx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.job = Some(Job { title: "Eksport wideo".into(), progress: 0.0, stage: String::new(), cancel: cancel.clone() });
+        self.job = Some(Job::new("Eksport wideo", "", Vec::new(), cancel.clone()));
         std::thread::spawn(move || {
             let ptx = tx.clone();
             let r = export_mp4(&proj, &info, audio.as_deref(), &out, &opts, &move |p, s| {
-                let _ = ptx.send(JobMsg::Progress(p, s.into()));
+                let _ = ptx.send(JobMsg::Progress(p, s.into(), String::new()));
             }, &cancel);
             let _ = tx.send(match r {
                 Ok(()) => JobMsg::Exported(out),
@@ -325,13 +404,12 @@ impl App {
     fn poll_jobs(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                JobMsg::Progress(p, s) => {
+                JobMsg::Progress(p, s, d) => {
                     if let Some(j) = self.job.as_mut() {
-                        j.progress = p;
-                        j.stage = s;
+                        j.update(p, s, d);
                     }
                 }
-                JobMsg::Words(words, n) => {
+                JobMsg::Words(words, n, info) => {
                     self.job = None;
                     if let Some(l) = self.loaded.as_mut() {
                         let nw = words.len();
@@ -344,7 +422,7 @@ impl App {
                         l.project.speakers = sp;
                         let _ = l.project.save();
                         self.dirty = true;
-                        self.set_status(format!("Gotowe: {nw} słów. Kliknij słowo, aby przejść; prawy przycisk — opcje."), false);
+                        self.set_status(format!("Gotowe: {nw} słów {info}. Kliknij słowo, aby przejść; prawy przycisk — opcje."), false);
                     }
                 }
                 JobMsg::Downloaded(id) => {
@@ -427,7 +505,7 @@ impl App {
             let mut go = false;
             let mut download = false;
             ui::card(ui, |ui| {
-                ui::card_header(ui, &self.grad, "1", "Transkrypcja", "Whisper na GPU, czasy każdego słowa");
+                ui::card_header(ui, &self.grad, "1", "Transkrypcja", "Whisper na GPU lub CPU, czasy każdego słowa");
                 ui.label(RichText::new("Model").color(MUTED).size(12.5));
                 let cur = transcribe::MODELS.iter().find(|m| m.id == self.model).map_or(self.model.clone(), |m| m.label.to_string());
                 egui::ComboBox::from_id_salt("model").width(ui.available_width()).selected_text(cur).show_ui(ui, |ui| {
@@ -441,6 +519,25 @@ impl App {
                 if !installed {
                     let mb = transcribe::MODELS.iter().find(|m| m.id == self.model).map_or(0, |m| m.mb);
                     download = ui::ghost_button(ui, &format!("↓  Pobierz model  ·  {mb} MB"), !busy).clicked();
+                }
+                ui.add_space(2.0);
+                ui.label(RichText::new("Liczy na").color(MUTED).size(12.5));
+                let dev_name = |d: transcribe::Device, gpus: &[String]| match d {
+                    transcribe::Device::Auto if gpus.is_empty() => "Procesor (CPU)".to_string(),
+                    transcribe::Device::Auto => format!("Auto · {}", gpus[0]),
+                    transcribe::Device::Gpu(i) => format!("GPU · {}", gpus.get(i).map_or("?", String::as_str)),
+                    transcribe::Device::Cpu => format!("Procesor (CPU) · {} wątków", transcribe::threads(false)),
+                };
+                egui::ComboBox::from_id_salt("device").width(ui.available_width()).selected_text(dev_name(self.device, &self.gpus)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.device, transcribe::Device::Auto, "Auto (karta graficzna, gdy jest)");
+                    for i in 0..self.gpus.len() {
+                        ui.selectable_value(&mut self.device, transcribe::Device::Gpu(i), format!("GPU {i} · {} ({})", self.gpus[i], transcribe::GPU_BACKEND));
+                    }
+                    ui.selectable_value(&mut self.device, transcribe::Device::Cpu, format!("Procesor (CPU) · {} wątków", transcribe::threads(false)));
+                });
+                if self.gpus.is_empty() {
+                    let why = if transcribe::GPU_BACKEND.is_empty() { "Ta wersja liczy tylko na procesorze. Pobierz wersję „gpu”, aby użyć karty graficznej." } else { "Nie znaleziono karty graficznej — liczy procesor." };
+                    ui.label(RichText::new(why).color(MUTED).size(11.5));
                 }
                 let Some(l) = self.loaded.as_mut() else {
                     ui.label(RichText::new("Najpierw otwórz wideo.").color(MUTED));
@@ -474,6 +571,10 @@ impl App {
                 ui.add_space(6.0);
                 let w = ui.available_width();
                 go = ui::primary_button(ui, &self.grad, if l.project.words.is_empty() { "Transkrybuj" } else { "Transkrybuj ponownie" }, !busy && installed, Vec2::new(w, 40.0)).clicked();
+                if let Some(j) = self.job.as_ref().filter(|j| !j.steps.is_empty()) {
+                    ui.add_space(4.0);
+                    job_steps(ui, j, &self.grad);
+                }
                 if self.num_speakers > 1 && !l.project.words.is_empty() && ui::ghost_button(ui, "Wykryj mówców ponownie", !busy).clicked() {
                     speakers::diarize(&mut l.project.words, &l.audio16, self.num_speakers);
                     while l.project.speakers.len() < self.num_speakers {
@@ -867,11 +968,16 @@ impl App {
                 // Pasek postępu z gradientem.
                 let (r, _) = ui.allocate_exact_size(Vec2::new(240.0, 8.0), Sense::hover());
                 ui.painter().rect_filled(r, 4.0, CARD_HI);
-                let fill = Rect::from_min_size(r.min, Vec2::new(r.width() * j.progress.clamp(0.0, 1.0), r.height()));
+                let fill = Rect::from_min_size(r.min, Vec2::new(r.width() * j.shown().clamp(0.0, 1.0), r.height()));
                 if fill.width() > 1.0 {
                     ui::gradient_rect(ui, fill, 4.0, &self.grad, 1.0);
                 }
-                ui.label(RichText::new(format!("{} {:.0}%", j.stage, j.progress * 100.0)).color(MUTED).size(12.5));
+                let mut txt = format!("{:.0}%  ·  {}", j.shown() * 100.0, j.stage);
+                txt += &format!("  ·  {}", clock(j.started.elapsed().as_secs_f64()));
+                if let Some(e) = j.eta() {
+                    txt += &format!(", zostało ~{}", clock(e));
+                }
+                ui.label(RichText::new(txt).color(MUTED).size(12.5));
                 if ui::ghost_button(ui, "Przerwij", true).clicked() {
                     j.cancel.store(true, Ordering::Relaxed);
                 }
@@ -891,6 +997,65 @@ enum WordAction {
     SetText(String),
     Merge,
     Speaker(usize),
+}
+
+/// Lista etapów zadania: ukończone (z czasem), bieżący (z paskiem i szczegółem), oczekujące.
+fn job_steps(ui: &mut egui::Ui, j: &Job, grad: &TextureHandle) {
+    let cur = j.steps.iter().position(|s| *s == j.stage).unwrap_or(0);
+    egui::Frame::new().fill(CARD_HI).corner_radius(10.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 5.0;
+        for (i, step) in j.steps.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                let p = ui.painter();
+                if i < cur {
+                    p.circle_filled(r.center(), 7.0, ui::GOOD);
+                    p.text(r.center(), egui::Align2::CENTER_CENTER, "✔", egui::FontId::proportional(9.0), BG);
+                } else if i == cur {
+                    // Pulsujący znacznik bieżącego etapu.
+                    let t = ui.ctx().input(|i| i.time) as f32;
+                    p.circle_filled(r.center(), 7.0, ACCENT.gamma_multiply(0.35 + 0.25 * (t * 4.0).sin().abs()));
+                    p.circle_filled(r.center(), 3.5, ACCENT);
+                } else {
+                    p.circle_stroke(r.center(), 6.5, egui::Stroke::new(1.2, BORDER));
+                }
+                let col = if i == cur { TEXT } else if i < cur { MUTED } else { MUTED.gamma_multiply(0.6) };
+                ui.label(RichText::new(*step).color(col).size(12.5).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let right = if let Some((_, d)) = j.done.iter().find(|(s, _)| s == step) {
+                        format!("{d:.1} s")
+                    } else if i == cur {
+                        format!("{:.1} s", j.stage_started.elapsed().as_secs_f64())
+                    } else {
+                        String::new()
+                    };
+                    ui.label(RichText::new(right).color(MUTED).size(11.5).monospace());
+                });
+            });
+            if i == cur {
+                ui.horizontal(|ui| {
+                    ui.add_space(22.0);
+                    ui.vertical(|ui| {
+                        if !j.detail.is_empty() {
+                            ui.add(egui::Label::new(RichText::new(&j.detail).color(MUTED).size(11.5)).truncate());
+                        }
+                        let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+                        ui.painter().rect_filled(r, 3.0, BG);
+                        let fill = Rect::from_min_size(r.min, Vec2::new(r.width() * j.shown().clamp(0.0, 1.0), r.height()));
+                        if fill.width() > 1.0 {
+                            ui::gradient_rect(ui, fill, 3.0, grad, 1.0);
+                        }
+                    });
+                });
+            }
+        }
+        ui.add_space(2.0);
+        let mut txt = format!("{:.0}%  ·  upłynęło {}", j.shown() * 100.0, clock(j.started.elapsed().as_secs_f64()));
+        if let Some(e) = j.eta() {
+            txt += &format!("  ·  zostało ~{}", clock(e));
+        }
+        ui.label(RichText::new(txt).color(MUTED).size(11.5));
+    });
 }
 
 fn stat(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {

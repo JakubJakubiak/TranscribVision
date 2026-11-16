@@ -1,13 +1,15 @@
 name: Windows build
 
-# Buduje TranscribVision na Windows (x64) i dodaje zip do wydania na GitHubie.
+# Buduje TranscribVision na Windows (x64) w dwóch wariantach i dodaje zipy do wydania:
+#  - gpu: whisper.cpp na karcie graficznej przez Vulkan (NVIDIA, AMD, Intel),
+#  - cpu: tylko procesor (dla komputerów bez sterownika Vulkan, np. maszyn wirtualnych).
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag wydania, do którego dodać build (np. v0.3.1)"
+        description: "Tag wydania (np. v0.4.0) albo gałąź do próbnego buildu (bez wysyłki do wydania)"
         required: true
 
 permissions:
@@ -16,24 +18,42 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [gpu, cpu]
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
       # bindgen (whisper-rs-sys) potrzebuje libclang z LLVM zainstalowanego na runnerze.
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      FEATURES: ${{ matrix.variant == 'gpu' && '--features vulkan' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      # Vulkan SDK (nagłówki, vulkan-1.lib i kompilator shaderów glslc) potrzebny tylko do budowania;
+      # w czasie działania program używa vulkan-1.dll ze sterownika karty graficznej.
+      - name: Vulkan SDK
+        if: matrix.variant == 'gpu'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: latest
+          install_runtime: false
+          cache: true
+          stripdown: true
 
       - name: Testy
-        run: cargo test --release
+        run: cargo test --release ${{ env.FEATURES }}
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release ${{ env.FEATURES }}
 
       - name: Paczka zip
         shell: pwsh
@@ -43,18 +63,19 @@ jobs:
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item target/release/transcribvision.exe "$dir/TranscribVision.exe"
           Copy-Item README.md "$dir/README.md"
-          $zip = "dist/TranscribVision-$v-windows-x64.zip"
+          $zip = "dist/TranscribVision-$v-windows-x64-${{ matrix.variant }}.zip"
           Compress-Archive -Path $dir -DestinationPath $zip -Force
           "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
           Get-Item $zip | Select-Object Name, Length
 
       - name: Dodaj do wydania
+        if: startsWith(env.TAG, 'v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload $env:TAG $env:ZIP --clobber --repo ${{ github.repository }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
-          name: TranscribVision-windows-x64
+          name: TranscribVision-windows-x64-${{ matrix.variant }}
           path: ${{ env.ZIP }}

@@ -1,6 +1,6 @@
 [package]
 name = "transcribvision"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Napisy do wideo: transkrypcja whisper.cpp, wycinanie pauz, animowane napisy z podświetlaniem słów. Czysty Rust."
 
@@ -9,6 +9,8 @@ description = "Napisy do wideo: transkrypcja whisper.cpp, wycinanie pauz, animow
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
 egui-wgpu = "0.37"
 whisper-rs = "0.16"
+# Ta sama wersja co w whisper-rs: lista urządzeń GPU z rejestru ggml.
+whisper-rs-sys = "0.15"
 craft-video = { git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", features = ["h264-decode", "h264-encode", "hevc-decode", "threads"] }
 craft-media = { git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false, features = ["isobmff"] }
 craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false, features = ["aac-decode", "aac-encode", "decode-native", "rayon"] }
@@ -24,9 +26,15 @@ rayon = "1"
 bytemuck = { version = "1", features = ["derive"] }
 dirs = "7"
 
-# GPU (Metal) dla whisper.cpp tylko na macOS; Windows liczy na CPU.
+# GPU (Metal) dla whisper.cpp zawsze na macOS. Na Windows/Linux GPU włącza cecha:
+# `--features vulkan` (NVIDIA, AMD, Intel; potrzebny Vulkan SDK przy budowaniu)
+# albo `--features cuda` (tylko NVIDIA; potrzebny CUDA Toolkit).
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", features = ["metal"] }
+
+[features]
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
 
 [profile.dev]
 opt-level = 1
